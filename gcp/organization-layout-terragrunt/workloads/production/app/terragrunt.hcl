@@ -7,8 +7,8 @@ include "common" {
 }
 
 inputs = {
-  name       = "ProductionApp"
-  project_id = "prod-richard-org-test"
+  name            = "ProductionApp"
+  project_id      = "prod-richard-org-test"
   deletion_policy = "DELETE"
-  activate_apis = ["compute.googleapis.com"]
+  activate_apis   = ["compute.googleapis.com"]
 }

@@ -16,6 +16,6 @@ terraform {
 }
 
 inputs = {
-  name = "test-compute-engine"
+  name       = "test-compute-engine"
   project_id = dependency.project.outputs.project_id
 }

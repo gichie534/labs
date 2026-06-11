@@ -7,7 +7,7 @@ include "common" {
 }
 
 inputs = {
-  name       = "audit"
-  project_id = "audit-richard-org-test"
+  name            = "audit"
+  project_id      = "audit-richard-org-test"
   deletion_policy = "DELETE"
 }
