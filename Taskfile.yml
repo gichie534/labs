@@ -1,0 +1,26 @@
+version: '3'
+
+# Root Taskfile — composes labs via `includes`, namespacing each so any lab can be
+# driven from the repo root (e.g. `task vpc:up`, `task eks:plan`).
+#
+# Add an entry whenever a new lab gains a Taskfile. Each lab lives at
+# <provider>/<name>/ and exposes the standard task interface
+# (fmt, validate, lint, plan, up, build, deploy, test, down).
+#
+# includes:
+#   vpc:
+#     taskfile: aws/secure-vpc/Taskfile.yml
+#     dir: aws/secure-vpc
+#   eks:
+#     taskfile: aws/eks-cicd/Taskfile.yml
+#     dir: aws/eks-cicd
+
+includes:
+  org-layout:
+    taskfile: gcp/organization-layout-terragrunt/Taskfile.yml
+    dir: gcp/organization-layout-terragrunt
+
+tasks:
+  default:
+    cmds: [task --list]
+    silent: true

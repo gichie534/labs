@@ -1,0 +1,38 @@
+version: '3'
+
+# Lifecycle for the gcp/organization-layout-terragrunt lab.
+
+tasks:
+  default:
+    cmds: [task --list]
+    silent: true
+
+  fmt:
+    desc: Format all Terragrunt HCL
+    cmds: [terragrunt hcl format]
+
+  validate:
+    desc: Validate every node in the hierarchy
+    cmds: [terragrunt run --all validate]
+
+  lint:
+    desc: Lint Terraform/Terragrunt
+    cmds: [tflint --recursive]
+
+  plan:
+    desc: Plan the whole org tree (cost-free)
+    cmds: [terragrunt run --all plan]
+
+  up:
+    desc: Provision the org hierarchy (creates cloud resources)
+    cmds: [terragrunt run --all apply --non-interactive]
+
+  test:
+    desc: Validate + plan as a cheap smoke test
+    cmds:
+      - task: validate
+      - task: plan
+
+  down:
+    desc: Destroy the whole org hierarchy
+    cmds: [terragrunt run --all destroy --non-interactive]

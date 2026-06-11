@@ -1,0 +1,14 @@
+# Repo-wide tool bootstrap (https://mise.jdx.dev).
+#
+# Run `mise install` once after cloning to get every dev tool below at a pinned version.
+#
+# Division of labor with tenv:
+#   - mise manages repo-wide dev tooling: task, tflint, and tenv itself.
+#   - tenv (installed here) remains the authority for Terraform and Terragrunt, reading each lab's
+#     `.terraform-version` / `.terragrunt-version` files. We deliberately do NOT pin terraform or
+#     terragrunt here so the two managers never fight over the same binary, and the per-lab pinning
+#     convention (see the `tech` steering) stays the single source of truth.
+[tools]
+task = "3.51.1"
+tflint = "0.63.1"
+"aqua:tofuutils/tenv" = "4.12.2"

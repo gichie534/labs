@@ -83,3 +83,28 @@ terragrunt run --all apply     # creates the org tree top-down following the dir
 ```
 
 Or apply a single node from its directory with `terragrunt apply` (its parent chain is pulled via dependencies).
+
+## Task commands
+
+This lab exposes the standard Task interface (run from the repo root with the `org-layout:` namespace,
+or from this directory without it). It has no app, so `build`/`deploy` are omitted; the directory tree
+*is* the org hierarchy, so tasks run from the lab root rather than an `infra/` dir.
+
+| Task                  | What it does                                           |
+| --------------------- | ------------------------------------------------------ |
+| `org-layout:fmt`      | Format all Terragrunt HCL (`terragrunt hcl format`).   |
+| `org-layout:validate` | Validate every node (`terragrunt run --all validate`). |
+| `org-layout:lint`     | Lint with `tflint --recursive`.                        |
+| `org-layout:plan`     | Plan the whole org tree (cost-free).                   |
+| `org-layout:up`       | Provision the hierarchy (`run --all apply`).           |
+| `org-layout:test`     | Cheap smoke test: `validate` then `plan`.              |
+| `org-layout:down`     | Destroy the whole hierarchy (`run --all destroy`).     |
+
+```sh
+task org-layout:validate   # cost-free
+task org-layout:plan       # cost-free
+task org-layout:up         # creates cloud resources
+```
+
+Tool versions are pinned via `.terraform-version` and `.terragrunt-version` (read by tenv).
+
