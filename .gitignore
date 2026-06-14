@@ -20,6 +20,9 @@ profile.cov
 # Dependency directories (remove the comment below to include it)
 # vendor/
 
+# Terraform / Terragrunt
+*.terragrunt-cache
+
 # Go workspace file
 go.work
 go.work.sum
