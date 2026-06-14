@@ -1,0 +1,84 @@
+version: '3'
+
+# Lifecycle for the gcp/gke-autopilot-helm lab.
+#
+# Infra is Terragrunt (units under infra/, composed by dependency blocks). The app is a Go
+# "hello world" server deployed to GKE Autopilot with Helm. Real deploys run from GitHub Actions;
+# the `build`/`deploy` tasks here mirror that flow for local iteration.
+#
+# Only `up` and `deploy` create cloud resources. fmt/validate/plan are cost-free.
+
+vars:
+  APP_DIR: app/go
+  CHART_DIR: deploy/helm/hello
+  IMAGE_NAME: hello
+  RELEASE: hello
+  NAMESPACE: hello
+
+tasks:
+  default:
+    cmds: [task --list]
+    silent: true
+
+  fmt:
+    desc: Format Terragrunt HCL and Go
+    cmds:
+      - terragrunt hcl format
+      - gofmt -w ./app/go
+
+  validate:
+    desc: Validate every infra unit (cost-free)
+    dir: infra
+    cmds: [terragrunt run --all validate]
+
+  lint:
+    desc: Lint Terraform/Terragrunt and the Helm chart
+    cmds:
+      - tflint --recursive
+      - helm lint {{.CHART_DIR}}
+
+  plan:
+    desc: Plan all infra units (cost-free)
+    dir: infra
+    cmds: [terragrunt run --all plan]
+
+  up:
+    desc: Provision infra — VPC, Autopilot cluster, registry, CI identity (creates cloud resources)
+    dir: infra
+    cmds: [terragrunt run --all apply --non-interactive]
+
+  build:
+    desc: Build the Go app image locally
+    cmds:
+      - docker build -t {{.IMAGE_NAME}}:dev {{.APP_DIR}}
+
+  deploy:
+    desc: Deploy the chart to the current kube-context with Helm (requires an image already pushed)
+    cmds:
+      - |
+        : "${REGISTRY:?set REGISTRY=<region>-docker.pkg.dev/<project>/<repo>}"
+        : "${TAG:?set TAG=<image tag>}"
+        helm upgrade --install {{.RELEASE}} {{.CHART_DIR}} \
+          --namespace {{.NAMESPACE}} --create-namespace \
+          --set image.repository="$REGISTRY/{{.IMAGE_NAME}}" \
+          --set image.tag="$TAG" \
+          --wait --timeout 5m
+
+  ci-config:
+    desc: Print the WIF provider name to set as a GitHub Actions variable
+    dir: infra
+    cmds:
+      - |
+        echo "Set this as a GitHub Actions repository variable:"
+        echo -n "WIF_PROVIDER="; (cd deployer-wif && terragrunt output -json provider_names | jq -r '.github')
+
+  test:
+    desc: Run the Go app tests; validate + plan as a cheap infra smoke test
+    cmds:
+      - go test ./app/go/...
+      - task: validate
+
+  down:
+    desc: Destroy all infra
+    dir: infra
+    cmds: [terragrunt run --all destroy --non-interactive]

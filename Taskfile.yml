@@ -19,6 +19,9 @@ includes:
   org-layout:
     taskfile: gcp/organization-layout-terragrunt/Taskfile.yml
     dir: gcp/organization-layout-terragrunt
+  gke-helm:
+    taskfile: gcp/gke-autopilot-helm/Taskfile.yml
+    dir: gcp/gke-autopilot-helm
 
 tasks:
   default:

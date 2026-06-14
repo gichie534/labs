@@ -1,0 +1,21 @@
+# Image is overridden by CI: `helm upgrade --install --set image.repository=... --set image.tag=...`
+image:
+  repository: REPLACE_WITH_REGISTRY_URL/hello
+  tag: latest
+  pullPolicy: IfNotPresent
+
+replicaCount: 2
+
+service:
+  type: LoadBalancer
+  port: 80
+  targetPort: 8080
+
+# Autopilot requires explicit resource requests; these are modest defaults.
+resources:
+  requests:
+    cpu: 250m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 256Mi
