@@ -53,6 +53,23 @@ intermediary GSA would add a privilege-escalation hop and a managed identity for
 (`service_account_bindings`) for when it is genuinely required; this lab simply doesn't need it. As
 a result the lab no longer consumes the `gcp/workload-iam` module.
 
+### Two registry identities: CI pushes, nodes pull
+
+The registry is touched by two different identities, and conflating them causes
+`ImagePullBackOff`. The **CI deployer** (the WIF principalSet) needs `artifactregistry.writer` to
+push images — granted in `deployer-wif`. The **image pull**, however, is performed by the *kubelet*
+on the GKE node, which authenticates as the node's service account (the default compute SA,
+`<project_number>-compute@developer.gserviceaccount.com` on Autopilot), not as the deployer and not
+as the pod's identity. On newer projects that SA has no Artifact Registry access by default, so
+pulls fail until it is granted `artifactregistry.reader`.
+
+We grant that reader role in the `registry` unit via the artifact-registry module's `reader_members`
+input (added in `gcp-artifact-registry-v0.2.0`). We chose to extend artifact-registry — rather than
+reuse `workload-iam` — because the node SA is an *existing*, GKE-managed identity, while
+`workload-iam` only ever creates and binds a *new* GSA for pod-runtime Workload Identity. The grant
+also needs the project *number* to build the node SA email, which Terragrunt can't look up, so it's
+supplied as the `GCP_PROJECT_NUMBER` env placeholder in `root.hcl`.
+
 ### Push-based deploy with Helm (not GitOps)
 
 The deploy is push-based: GitHub Actions builds the image, pushes to Artifact Registry, fetches
@@ -64,4 +81,5 @@ cluster credentials, and runs `helm upgrade --install`. The repo's k8s steering 
 - The cluster control plane is internet-reachable for the lab's lifetime — tear it down with
   `task gke-helm:down` when finished.
 - The lab depends on four module tags being published: `gcp-vpc-v0.1.0`, `gcp-gke-v0.1.0`,
-  `gcp-artifact-registry-v0.1.0`, and the new `gcp-workload-identity-federation-v0.1.0`.
+  `gcp-artifact-registry-v0.2.0` (adds `reader_members`), and the new
+  `gcp-workload-identity-federation-v0.1.0`.
