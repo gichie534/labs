@@ -23,16 +23,21 @@ GitHub Actions (OIDC token)
 Infra is composed as small Terragrunt units under `infra/`, each sourced from the modules repo by a
 pinned tag:
 
-| Unit           | Module                                   | Pinned tag                                |
-| -------------- | ---------------------------------------- | ----------------------------------------- |
-| `network`      | `gcp/vpc`                                | `gcp-vpc-v0.1.0`                          |
-| `cluster`      | `gcp/gke`                                | `gcp-gke-v0.1.0`                          |
-| `registry`     | `gcp/artifact-registry`                  | `gcp-artifact-registry-v0.1.0`            |
-| `deployer-wif` | `gcp/workload-identity-federation`       | `gcp-workload-identity-federation-v0.1.0` |
+| Unit           | Module                             | Pinned tag                                |
+| -------------- | ---------------------------------- | ----------------------------------------- |
+| `network`      | `gcp/vpc`                          | `gcp-vpc-v0.1.0`                          |
+| `cluster`      | `gcp/gke`                          | `gcp-gke-v0.1.0`                          |
+| `registry`     | `gcp/artifact-registry`            | `gcp-artifact-registry-v0.2.0`            |
+| `deployer-wif` | `gcp/workload-identity-federation` | `gcp-workload-identity-federation-v0.1.0` |
 
 `cluster` depends on `network`. `deployer-wif` uses **direct** Workload Identity Federation — CI
 acts as the federated identity itself and is granted its project roles directly, with no service
 account to impersonate and no JSON key.
+
+Two distinct identities touch the registry: the **CI deployer** principalSet gets
+`artifactregistry.writer` (push, in `deployer-wif`), while the **GKE node** service account gets
+`artifactregistry.reader` (pull, in `registry`). Image pulls authenticate as the node SA, not the
+deployer or the pod — granting only the deployer leaves pods stuck in `ImagePullBackOff`.
 
 ## Prerequisites
 
@@ -45,9 +50,13 @@ Set these before running (the lab reads them via env, with placeholders otherwis
 ```bash
 export GCP_PROJECT=my-project
 export GCP_REGION=us-central1
+export GCP_PROJECT_NUMBER=123456789012     # for the GKE node SA that pulls images
 export GITHUB_REPOSITORY=owner/repo        # repo allowed to federate into the WIF pool
 export TF_STATE_BUCKET=my-tf-state-bucket
 ```
+
+> `GCP_PROJECT_NUMBER` is the project *number*, not the ID. Get it with:
+> `gcloud projects describe "$GCP_PROJECT" --format='value(projectNumber)'`
 
 ## Stand it up
 

@@ -16,6 +16,11 @@ locals {
   # Region for the regional Autopilot cluster, its VPC subnet, and the Artifact Registry repo.
   region = get_env("GCP_REGION", "us-central1")
 
+  # Project number (distinct from project_id) — needed to build the GKE node service account email
+  # (<project_number>-compute@developer.gserviceaccount.com), which pulls images from the registry.
+  # Find it with: gcloud projects describe "$GCP_PROJECT" --format='value(projectNumber)'
+  project_number = get_env("GCP_PROJECT_NUMBER", "REPLACE_WITH_PROJECT_NUMBER")
+
   # GitHub repository (OWNER/REPO) whose Actions workflows may federate into the WIF pool.
   github_repository = get_env("GITHUB_REPOSITORY", "REPLACE_WITH_OWNER/REPO")
 
