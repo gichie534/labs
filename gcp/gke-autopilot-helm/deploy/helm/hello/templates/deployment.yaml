@@ -16,6 +16,12 @@ spec:
     spec:
       securityContext:
         runAsNonRoot: true
+        # Distroless "nonroot" runs as UID/GID 65532. State it numerically so the kubelet can
+        # verify non-root before start (a username like "nonroot" can't be resolved to a UID,
+        # which triggers CreateContainerConfigError under runAsNonRoot).
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
         seccompProfile:
           type: RuntimeDefault
       containers:
