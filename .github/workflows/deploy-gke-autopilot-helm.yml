@@ -24,7 +24,7 @@ on:
     paths:
       - "gcp/gke-autopilot-helm/app/go/**"
       - "gcp/gke-autopilot-helm/deploy/helm/**"
-      - ".github/workflows/deploy.yml"
+      - ".github/workflows/deploy-gke-autopilot-helm.yml"
 
 permissions:
   contents: read
