@@ -21,7 +21,38 @@ profile.cov
 # vendor/
 
 # Terraform / Terragrunt
-*.terragrunt-cache
+# Local .terraform directories
+**/.terraform/*
+
+# Terragrunt cache directories
+.terragrunt-cache/
+**/.terragrunt-cache/
+
+# Terraform state files (should be stored remotely)
+*.tfstate
+*.tfstate.*
+
+# Crash log files
+crash.log
+crash.*.log
+
+# Terraform variable files that may contain secrets
+*.tfvars
+*.tfvars.json
+
+# Terraform plan output files
+*.tfplan
+*.tfplan.*
+
+# Override files (typically used for local overrides)
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# CLI configuration and credential files
+.terraformrc
+terraform.rc
 
 # Go workspace file
 go.work
