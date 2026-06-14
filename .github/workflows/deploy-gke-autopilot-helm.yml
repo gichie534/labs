@@ -78,4 +78,4 @@ jobs:
             --set image.repository="$REGISTRY/$IMAGE_NAME" \
             --set image.tag="${GITHUB_SHA::12}" \
             --atomic \
-            --wait --timeout 5m
+            --wait --timeout 10m
