@@ -1,0 +1,170 @@
+# Walk the VPC-CNI IP-allocation lab end to end and publish the three phase reports as artifacts.
+#
+# This is the CI expression of the same sequence the Taskfile runs locally, using Terragrunt +
+# AWS CLI + kubectl directly:
+#   Phase 1 baseline  -> Phase 2 scale (CLI) -> Phase 3 tune (CNI) -> assert with the Go test
+#
+# Auth is keyless via GitHub OIDC -> an AWS IAM role. Create that role ONCE from an admin context
+# with `task eks-cni:ci-bootstrap` (set GITHUB_REPOSITORY first), then `task eks-cni:ci-config`
+# prints the ARN to set as the AWS_ROLE_ARN repo variable. The role is built by the
+# aws/oidc-federation module — see bootstrap/ci-identity.
+#
+# Required repository variables (Settings > Secrets and variables > Actions > Variables):
+#   AWS_REGION        e.g. us-east-1
+#   AWS_ROLE_ARN      IAM role ARN from `task eks-cni:ci-config` (the OIDC-assumable CI role)
+#   TF_STATE_BUCKET   S3 bucket for Terraform state
+#
+# This workflow lives inside the lab folder. To have GitHub run it, move or symlink it to the
+# repository's top-level .github/workflows/. It is manual-dispatch only — it creates real, costed
+# infrastructure and tears it down at the end.
+
+name: eks-vpc-cni-ip-allocation
+
+on:
+  workflow_dispatch:
+    inputs:
+      node_scale:
+        description: Node count for phase 2
+        default: '2'
+      warm_ip_target:
+        description: WARM_IP_TARGET for phase 3
+        default: '1'
+      minimum_ip_target:
+        description: MINIMUM_IP_TARGET for phase 3
+        default: '4'
+      destroy:
+        description: Destroy infra at the end
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+  id-token: write # required for GitHub to mint the OIDC token used to assume the AWS role
+
+env:
+  LAB_DIR: aws/eks-vpc-cni-ip-allocation
+  CLUSTER_NAME: eks-cni-ip
+  NODE_GROUP: eks-cni-ip-default
+  AWS_REGION: ${{ vars.AWS_REGION }}
+  TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET }}
+  TG_NON_INTERACTIVE: 'true'
+
+jobs:
+  walk:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: aws/eks-vpc-cni-ip-allocation
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (keyless via OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Install tooling (tenv -> terraform/terragrunt, kubectl, jq)
+        run: |
+          curl -fsSL https://get.opentofu.org/install-opentofu.sh -o /dev/null || true
+          # tenv reads .terraform-version / .terragrunt-version in this dir.
+          curl -fsSL "https://github.com/tofuutils/tenv/releases/download/v4.12.2/tenv_v4.12.2_amd64.deb" -o /tmp/tenv.deb
+          sudo dpkg -i /tmp/tenv.deb
+          tenv tf install
+          tenv tg install
+          sudo apt-get update && sudo apt-get install -y jq
+          curl -fsSLO "https://dl.k8s.io/release/$(curl -fsSL https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+          sudo install -m 0755 kubectl /usr/local/bin/kubectl
+
+      # --- Phase 1: baseline ---------------------------------------------------------------------
+      - name: 'Phase 1 — provision VPC + EKS + 1 node (CNI defaults)'
+        working-directory: aws/eks-vpc-cni-ip-allocation/infra
+        run: terragrunt run --all apply --non-interactive
+
+      - name: Point kubectl at the cluster
+        run: aws eks update-kubeconfig --name "$CLUSTER_NAME" --region "$AWS_REGION"
+
+      - name: 'Phase 1 — report baseline'
+        run: ./scripts/report.sh phase-1-baseline
+
+      # --- Phase 2: scale via the AWS CLI --------------------------------------------------------
+      - name: 'Phase 2 — scale the node group (CLI)'
+        run: |
+          aws eks update-nodegroup-config --cluster-name "$CLUSTER_NAME" --region "$AWS_REGION" \
+            --nodegroup-name "$NODE_GROUP" \
+            --scaling-config minSize=1,maxSize=${{ inputs.node_scale }},desiredSize=${{ inputs.node_scale }}
+          aws eks wait nodegroup-active --cluster-name "$CLUSTER_NAME" --region "$AWS_REGION" \
+            --nodegroup-name "$NODE_GROUP"
+          kubectl wait --for=condition=Ready nodes --all --timeout=300s || true
+          sleep 30
+
+      - name: 'Phase 2 — report scaled (untuned baseline for the assertion)'
+        run: ./scripts/report.sh phase-2-scaled
+
+      # --- Phase 3: tune the VPC CNI -------------------------------------------------------------
+      - name: 'Phase 3 — tune WARM_IP_TARGET / MINIMUM_IP_TARGET'
+        working-directory: aws/eks-vpc-cni-ip-allocation/infra/cluster
+        env:
+          WARM_IP_TARGET: ${{ inputs.warm_ip_target }}
+          MINIMUM_IP_TARGET: ${{ inputs.minimum_ip_target }}
+        run: |
+          terragrunt apply -auto-approve --non-interactive
+          kubectl -n kube-system rollout status daemonset aws-node --timeout=300s
+
+      - name: 'Phase 3 — recycle nodes so fresh ones boot under the new IP targets'
+        # The CNI frees already-warmed ENIs only lazily (cooldowns), so a daemonset restart does NOT
+        # reliably reclaim them. Terminating the instances makes the ASG launch fresh nodes under the
+        # new IP-target math — deterministic.
+        run: |
+          DESIRED="$(aws eks describe-nodegroup --cluster-name "$CLUSTER_NAME" --region "$AWS_REGION" \
+            --nodegroup-name "$NODE_GROUP" --query 'nodegroup.scalingConfig.desiredSize' --output text)"
+          IDS="$(aws ec2 describe-instances --region "$AWS_REGION" \
+            --filters "Name=tag:eks:nodegroup-name,Values=$NODE_GROUP" \
+                      "Name=instance-state-name,Values=running" \
+            --query 'Reservations[].Instances[].InstanceId' --output text)"
+          echo "Terminating node instances: $IDS"
+          [ -n "$IDS" ] && aws ec2 terminate-instances --region "$AWS_REGION" --instance-ids $IDS >/dev/null
+          aws eks wait nodegroup-active --cluster-name "$CLUSTER_NAME" --region "$AWS_REGION" \
+            --nodegroup-name "$NODE_GROUP"
+          # nodegroup-active can return before the old instances are gone and replacements are Ready.
+          # Block until DESIRED nodes are Ready, none NotReady, and none of the terminated IDs remain.
+          echo "Waiting for $DESIRED fresh Ready node(s)..."
+          for i in $(seq 1 60); do
+            nodes_json="$(kubectl get nodes -o json)"
+            ready="$(echo "$nodes_json" | jq '[.items[] | select(any(.status.conditions[]; .type=="Ready" and .status=="True"))] | length')"
+            notready="$(echo "$nodes_json" | jq '[.items[] | select(any(.status.conditions[]; .type=="Ready" and .status!="True"))] | length')"
+            stale=0
+            for old in $IDS; do
+              if echo "$nodes_json" | jq -e --arg id "$old" '[.items[].spec.providerID | select(contains($id))] | length > 0' >/dev/null; then
+                stale=$((stale+1))
+              fi
+            done
+            echo "  attempt $i: ready=$ready notready=$notready stale_old=$stale (want $DESIRED/0/0)"
+            if [ "$ready" -eq "$DESIRED" ] && [ "$notready" -eq 0 ] && [ "$stale" -eq 0 ]; then break; fi
+            if [ "$i" -eq 60 ]; then echo "timed out waiting for fresh nodes" >&2; exit 1; fi
+            sleep 15
+          done
+          sleep 30
+
+      - name: 'Phase 3 — report tuned'
+        run: ./scripts/report.sh phase-3-tuned
+
+      # --- Assert --------------------------------------------------------------------------------
+      - name: Assert tuning reclaimed IPs
+        working-directory: aws/eks-vpc-cni-ip-allocation/test
+        env:
+          RUN_LIVE: '1'
+        run: go test -v ./...
+
+      - name: Upload phase reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cni-ip-reports
+          path: aws/eks-vpc-cni-ip-allocation/reports/*.json
+
+      # --- Teardown ------------------------------------------------------------------------------
+      - name: Destroy infra
+        if: ${{ always() && inputs.destroy }}
+        working-directory: aws/eks-vpc-cni-ip-allocation/infra
+        run: terragrunt run --all destroy --non-interactive

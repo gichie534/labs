@@ -1,0 +1,217 @@
+version: '3'
+
+# Lifecycle for the aws/eks-vpc-cni-ip-allocation lab.
+#
+# The lab walks three phases and reports the VPC-CNI IP-allocation state after each, so you can
+# watch a /26 private subnet drain as nodes join and then recover once the CNI is tuned:
+#
+#   Phase 1 (baseline) : cluster + 1 node, CNI at defaults        -> report phase-1-baseline
+#   Phase 2 (scaled)   : node group scaled to NODE_SCALE via CLI  -> report phase-2-scaled
+#   Phase 3 (tuned)    : WARM_IP_TARGET/MINIMUM_IP_TARGET applied  -> report phase-3-tuned
+#
+# Only `up`, `scale`, and `tune` create or mutate cloud resources. fmt/validate/plan/report-* off
+# the JSON are cost-free (report-* needs a live cluster).
+#
+# Env (see README):
+#   AWS_REGION, TF_STATE_BUCKET   — required for real applies
+#   NODE_SCALE                    — phase-2 node count (default 2 = 8 vCPUs, fits the default quota)
+#   WARM_IP_TARGET, MINIMUM_IP_TARGET — the phase-3 knobs (default 1 / 4)
+
+vars:
+  CLUSTER: eks-cni-ip
+  NODE_GROUP: eks-cni-ip-default
+  REGION: '{{.AWS_REGION | default "us-east-1"}}'
+  # Default scale is 2 large nodes = 8 vCPUs, which fits a fresh account's default On-Demand
+  # Standard vCPU limit (L-1216C47A). Bump that quota and pass NODE_SCALE=3+ for more.
+  NODE_SCALE: '{{.NODE_SCALE | default "2"}}'
+  # Phase-3 tuning defaults. WARM_IP_TARGET=1 keeps just one spare warm IP; MINIMUM_IP_TARGET=4
+  # floors the pool so small bursts don't thrash. Override on the command line.
+  WARM_IP: '{{.WARM_IP_TARGET | default "1"}}'
+  MIN_IP: '{{.MINIMUM_IP_TARGET | default "4"}}'
+
+env:
+  CLUSTER_NAME: '{{.CLUSTER}}'
+  AWS_REGION: '{{.REGION}}'
+
+tasks:
+  default:
+    cmds: [task --list]
+    silent: true
+
+  fmt:
+    desc: Format Terragrunt HCL and Go
+    cmds:
+      - terragrunt hcl format
+      - gofmt -w ./test
+
+  validate:
+    desc: Validate every infra unit (cost-free)
+    dir: infra
+    cmds: [terragrunt run --all validate]
+
+  lint:
+    desc: Lint Terraform/Terragrunt and shell
+    cmds:
+      - tflint --recursive
+      - bash -n scripts/report.sh
+
+  plan:
+    desc: Plan all infra units (cost-free)
+    dir: infra
+    cmds: [terragrunt run --all plan]
+
+  kubeconfig:
+    desc: Point kubectl at the lab cluster
+    cmds:
+      - aws eks update-kubeconfig --name {{.CLUSTER}} --region {{.REGION}}
+
+  # --- State backend bootstrap (run once before the first validate/plan/up) -----------------------
+  state-bootstrap:
+    desc: 'Create the S3 state bucket (run once; needs TF_STATE_BUCKET + admin creds)'
+    dir: infra
+    cmds:
+      - terragrunt backend bootstrap --all --non-interactive
+
+  # --- CI identity bootstrap (run once, from an admin context — NOT part of the phase walk) -------
+  ci-bootstrap:
+    desc: 'Create the GitHub OIDC provider + CI role (run once with admin creds; set GITHUB_REPOSITORY)'
+    dir: bootstrap/ci-identity
+    cmds:
+      - terragrunt apply -auto-approve --non-interactive
+
+  ci-config:
+    desc: Print the CI role ARN to set as the AWS_ROLE_ARN GitHub Actions variable
+    dir: bootstrap/ci-identity
+    cmds:
+      - |
+        echo "Set this as a GitHub Actions repository variable:"
+        echo -n "AWS_ROLE_ARN="; terragrunt output -json role_arns | jq -r '.ci'
+
+  ci-bootstrap-down:
+    desc: Destroy the CI identity (removes the OIDC provider + role)
+    dir: bootstrap/ci-identity
+    cmds:
+      - terragrunt destroy -auto-approve --non-interactive
+
+  # --- Phase 1: baseline ---------------------------------------------------------------------------
+  up:
+    desc: 'Phase 1 — provision VPC + EKS + 1 node, CNI at defaults (creates cloud resources)'
+    dir: infra
+    cmds: [terragrunt run --all apply --non-interactive]
+
+  report-baseline:
+    desc: 'Phase 1 — snapshot IP state (cluster + 1 node, untuned)'
+    deps: [kubeconfig]
+    cmds:
+      - ./scripts/report.sh phase-1-baseline
+
+  # --- Phase 2: scale the node group via the AWS CLI ----------------------------------------------
+  # The aws/eks module sets ignore_changes on desired_size, so scaling is an imperative CLI op, not
+  # a Terraform apply. Each new node grabs a warm ENI of secondary IPs — watch the subnet drain.
+  scale:
+    desc: 'Phase 2 — scale the node group to NODE_SCALE (default 2) via the AWS CLI'
+    cmds:
+      - aws eks update-nodegroup-config --cluster-name {{.CLUSTER}} --region {{.REGION}}
+        --nodegroup-name {{.NODE_GROUP}}
+        --scaling-config minSize=1,maxSize={{.NODE_SCALE}},desiredSize={{.NODE_SCALE}}
+      - echo "Waiting for the node group to finish scaling..."
+      - aws eks wait nodegroup-active --cluster-name {{.CLUSTER}} --region {{.REGION}}
+        --nodegroup-name {{.NODE_GROUP}}
+      - kubectl wait --for=condition=Ready nodes --all --timeout=300s || true
+      # Let the CNI settle its warm IP pool on the new nodes before the "before" report is taken.
+      - sleep 30
+
+  report-scaled:
+    desc: 'Phase 2 — snapshot IP state after scaling (untuned). This is the "before" for the test.'
+    deps: [kubeconfig]
+    cmds:
+      - ./scripts/report.sh phase-2-scaled
+
+  # --- Phase 3: tune the VPC CNI ------------------------------------------------------------------
+  tune:
+    desc: 'Phase 3 — apply WARM_IP_TARGET/MINIMUM_IP_TARGET to the vpc-cni addon, recycle nodes'
+    dir: infra/cluster
+    env:
+      WARM_IP_TARGET: '{{.WARM_IP}}'
+      MINIMUM_IP_TARGET: '{{.MIN_IP}}'
+    cmds:
+      # Re-apply only the cluster unit; the changed env rebuilds the vpc-cni configuration_values,
+      # which updates the aws-node daemonset env. -auto-approve goes to OpenTofu: on a single-unit
+      # apply, terragrunt's --non-interactive suppresses only its own prompts, not tofu's.
+      - terragrunt apply -auto-approve --non-interactive
+      - kubectl -n kube-system rollout status daemonset aws-node --timeout=300s
+      # Recycle the nodes. The CNI frees already-warmed ENIs only lazily (with cooldowns), so a
+      # daemonset restart does NOT reliably reclaim them. Terminating the instances makes the managed
+      # node group's ASG launch fresh nodes that come up under the new IP-target math — deterministic.
+      - task: recycle-nodes
+
+  recycle-nodes:
+    desc: 'Terminate the node group instances so the ASG replaces them with fresh ones'
+    cmds:
+      - |
+        set -euo pipefail
+        DESIRED="$(aws eks describe-nodegroup --cluster-name {{.CLUSTER}} --region {{.REGION}} \
+          --nodegroup-name {{.NODE_GROUP}} --query 'nodegroup.scalingConfig.desiredSize' --output text)"
+        IDS="$(aws ec2 describe-instances --region {{.REGION}} \
+          --filters "Name=tag:eks:nodegroup-name,Values={{.NODE_GROUP}}" \
+                    "Name=instance-state-name,Values=running" \
+          --query 'Reservations[].Instances[].InstanceId' --output text)"
+        if [ -z "$IDS" ]; then echo "no running node instances found"; exit 0; fi
+        echo "Terminating node instances: $IDS"
+        aws ec2 terminate-instances --region {{.REGION}} --instance-ids $IDS >/dev/null
+        echo "Waiting for the ASG to launch $DESIRED fresh instance(s) and EKS to settle..."
+        aws eks wait nodegroup-active --cluster-name {{.CLUSTER}} --region {{.REGION}} \
+          --nodegroup-name {{.NODE_GROUP}}
+        # aws eks wait returns as soon as the nodegroup status is ACTIVE, which can be BEFORE the old
+        # instances are gone and the replacements are Ready. The old nodes also briefly still show
+        # Ready right after termination. So block until: exactly DESIRED nodes are Ready, none are
+        # NotReady, and NONE of the terminated instance IDs remain registered.
+        echo "Waiting for $DESIRED fresh Ready node(s) (old: $IDS gone)..."
+        for i in $(seq 1 60); do
+          nodes_json="$(kubectl get nodes -o json)"
+          ready="$(echo "$nodes_json" | jq '[.items[] | select(any(.status.conditions[]; .type=="Ready" and .status=="True"))] | length')"
+          notready="$(echo "$nodes_json" | jq '[.items[] | select(any(.status.conditions[]; .type=="Ready" and .status!="True"))] | length')"
+          stale=0
+          for old in $IDS; do
+            if echo "$nodes_json" | jq -e --arg id "$old" '[.items[].spec.providerID | select(contains($id))] | length > 0' >/dev/null; then
+              stale=$((stale+1))
+            fi
+          done
+          echo "  attempt $i: ready=$ready notready=$notready stale_old=$stale (want $DESIRED ready, 0 notready, 0 stale)"
+          if [ "$ready" -eq "$DESIRED" ] && [ "$notready" -eq 0 ] && [ "$stale" -eq 0 ]; then
+            echo "All $DESIRED fresh nodes Ready."
+            break
+          fi
+          if [ "$i" -eq 60 ]; then echo "timed out waiting for fresh nodes" >&2; exit 1; fi
+          sleep 15
+        done
+        # Give the CNI a moment to settle its IP pool on the fresh nodes before reporting.
+        sleep 30
+
+  report-tuned:
+    desc: 'Phase 3 — snapshot IP state after tuning. This is the "after" for the test.'
+    deps: [kubeconfig]
+    cmds:
+      - ./scripts/report.sh phase-3-tuned
+
+  # --- Convenience: run the whole walk end to end -------------------------------------------------
+  walk:
+    desc: 'Run all three phases in order with a report after each (creates cloud resources)'
+    cmds:
+      - task: up
+      - task: report-baseline
+      - task: scale
+      - task: report-scaled
+      - task: tune
+      - task: report-tuned
+      - task: test
+
+  test:
+    desc: 'Assert tuning reclaimed IPs (reads reports/); RUN_LIVE=1 to also hit AWS'
+    dir: test
+    cmds: [go test -v ./...]
+
+  down:
+    desc: Destroy all infra
+    dir: infra
+    cmds: [terragrunt run --all destroy --non-interactive]
