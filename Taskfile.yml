@@ -22,6 +22,9 @@ includes:
   gke-helm:
     taskfile: gcp/gke-autopilot-helm/Taskfile.yml
     dir: gcp/gke-autopilot-helm
+  eks-cni:
+    taskfile: aws/eks-vpc-cni-ip-allocation/Taskfile.yml
+    dir: aws/eks-vpc-cni-ip-allocation
 
 tasks:
   default:
