@@ -18,6 +18,9 @@ Follow the `taskfile-conventions` steering for the standard interface.
    - Point infra tasks at `dir: infra`.
    - Add `vars:` for region, image name, cluster name as needed.
    - Wire `deps:` where one task requires another (e.g. `deploy` deps on `build`).
+   - Load runtime inputs from a `.env` file via per-task `dotenv:` (committed `.env.example`,
+     gitignored `.env`); mind the `dir: infra` → `['../.env']` path rule. See the dotenv section in
+     `taskfile-conventions`.
 3. **Pin tools** — if missing, add `.terraform-version` and `.terragrunt-version` to the lab (read
    by tenv — a single version string each).
 4. **Register in the root Taskfile** — add an `includes:` entry with a short namespace so the lab

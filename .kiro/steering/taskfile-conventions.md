@@ -33,6 +33,40 @@ bodies differ. A lab without an app omits `build` and `deploy`.
 - Only `up` and `deploy` create cloud resources. Never make them a silent dependency of `test`
   without intent — `fmt`, `validate`, `plan` must stay cost-free.
 
+## Environment config via `.env` (dotenv)
+
+A lab's runtime inputs (project ID, region, domain, state bucket, etc.) are loaded from a local
+**`.env`** file using Task's built-in dotenv, not exported by hand each session. Terragrunt's
+`root.hcl` reads them through `get_env(...)`, so values in `.env` flow straight into the units.
+
+Provide a committed **`.env.example`** template documenting every variable; the real **`.env`** is
+gitignored (already covered by the repo `.gitignore`). Shell-exported vars take precedence over
+`.env`, and a missing `.env` is harmless (vars stay empty), so cost-free tasks still run on a clean
+checkout.
+
+Two non-obvious constraints (Task behavior — both matter):
+
+- **A global top-level `dotenv:` is rejected in a Taskfile that another Taskfile `include`s.** Every
+  lab Taskfile is included by the root one, so declare `dotenv:` **per task** instead, on each task
+  that needs lab inputs (not on `default` or purely-local tasks).
+- **dotenv resolves relative to the task's working dir.** Tasks that set `dir: infra` must load
+  `dotenv: ['../.env']` (the lab root); tasks without `dir:` load `dotenv: ['.env']`. Both point at
+  the single lab-root `.env`.
+
+```yaml
+tasks:
+  up: # runs in infra/ -> ../.env
+    dir: infra
+    dotenv: ['../.env']
+    cmds: [terragrunt run-all apply --non-interactive]
+
+  deploy: # runs at lab root -> .env
+    dotenv: ['.env']
+    cmds: [helm upgrade --install ...]
+```
+
+Document the `cp .env.example .env` step in the lab's README.
+
 ## Example — lab with a Go app on EKS
 
 ```yaml
