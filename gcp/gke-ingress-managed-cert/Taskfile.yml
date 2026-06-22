@@ -1,0 +1,196 @@
+version: '3'
+
+# Lifecycle for the gcp/gke-ingress-managed-cert lab.
+#
+# Infra is Terragrunt (units under infra/, composed by dependency blocks). The app is a Go
+# "hello world" server deployed to GKE Autopilot with Helm, exposed via a classic GKE Ingress
+# (external Application Load Balancer) with a Google-managed TLS certificate (ManagedCertificate CRD)
+# and an HTTP->HTTPS redirect. Real deploys run from GitHub Actions; the build/deploy/dns/verify
+# tasks here mirror that flow for local iteration.
+#
+# Two-phase HTTPS (a consequence of the ephemeral LB IP + load-balancer-authorized cert):
+#   1. up      -> create infra + the public child zone delegated from the parent zone (no A record).
+#   2. deploy  -> install the app + Ingress + ManagedCertificate (LB allocates an ephemeral IP).
+#   3. dns     -> read the Ingress IP and publish the apex A record (re-apply the dns unit).
+#   4. verify  -> wait for the cert to go Active + DNS to resolve, then GET https://$INGRESS_DOMAIN.
+# `task gke-ingress:all` runs deploy->dns->verify in order after `up`.
+#
+# Only `up`, `deploy`, and `dns` create/modify cloud resources. fmt/validate/plan are cost-free.
+#
+# CONFIG: lab inputs (GCP_PROJECT, GCP_REGION, INGRESS_DOMAIN, PARENT_DNS_*, etc.) are loaded from a
+# local `.env` file via Task's built-in dotenv. Copy `.env.example` to `.env` and fill it in; `.env`
+# is gitignored. Values exported in your shell still win — dotenv only fills what isn't already set —
+# and Terragrunt's root.hcl picks them up through get_env(...) since they're in the environment. A
+# missing `.env` is harmless (vars just stay empty), so cost-free tasks still run on a fresh checkout.
+#
+# A global top-level `dotenv:` is rejected in a Taskfile that another Taskfile `include`s (the root
+# labs/Taskfile.yml includes this one), so `.env` is declared per-task. NOTE the path nuance: dotenv
+# resolves relative to the task's working dir, so tasks that set `dir: infra` load `['../.env']`
+# (the lab root) while the rest load `['.env']`.
+
+vars:
+  APP_DIR: app/go
+  CHART_DIR: deploy/helm/hello
+  IMAGE_NAME: hello
+  RELEASE: hello
+  NAMESPACE: hello
+  CLUSTER: gke-ingress-managed-cert
+  REPO: gke-ingress-managed-cert
+
+tasks:
+  default:
+    cmds: [task --list]
+    silent: true
+
+  init-state:
+    desc: Create the GCS bucket for Terraform/Terragrunt remote state (idempotent; run once before `up`)
+    dotenv: ['.env']
+    cmds:
+      - |
+        : "${GCP_PROJECT:?set GCP_PROJECT=<project id>}"
+        : "${TF_STATE_BUCKET:?set TF_STATE_BUCKET=<bucket name (no gs:// prefix)>}"
+        LOCATION="${GCP_REGION:-us-central1}"
+        if gcloud storage buckets describe "gs://$TF_STATE_BUCKET" --project "$GCP_PROJECT" >/dev/null 2>&1; then
+          echo "Bucket gs://$TF_STATE_BUCKET already exists — nothing to do."
+        else
+          echo "Creating gs://$TF_STATE_BUCKET in $LOCATION..."
+          gcloud storage buckets create "gs://$TF_STATE_BUCKET" \
+            --project "$GCP_PROJECT" \
+            --location "$LOCATION" \
+            --uniform-bucket-level-access \
+            --public-access-prevention
+        fi
+        # Versioning protects state against accidental corruption/overwrite.
+        gcloud storage buckets update "gs://$TF_STATE_BUCKET" --versioning
+
+  fmt:
+    desc: Format Terragrunt HCL and Go
+    cmds:
+      - terragrunt hcl format
+      - gofmt -w ./app/go
+
+  validate:
+    desc: Validate every infra unit (cost-free)
+    dir: infra
+    dotenv: ['../.env']
+    cmds: [terragrunt run --all validate]
+
+  lint:
+    desc: Lint Terraform/Terragrunt and the Helm chart
+    cmds:
+      - tflint --recursive
+      - helm lint {{.CHART_DIR}} --set domain=placeholder.example.com --set image.repository=example/hello --set image.tag=dev
+
+  plan:
+    desc: Plan all infra units (cost-free)
+    dir: infra
+    dotenv: ['../.env']
+    cmds: [terragrunt run --all plan]
+
+  up:
+    desc: Provision infra — VPC, Autopilot cluster, registry, CI identity, and the delegated public DNS zone (creates cloud resources)
+    dir: infra
+    dotenv: ['../.env']
+    cmds: [terragrunt run --all apply --non-interactive]
+
+  build:
+    desc: Build the Go app image locally (linux/amd64 to match GKE nodes)
+    cmds:
+      - docker build --platform linux/amd64 -t {{.IMAGE_NAME}}:dev {{.APP_DIR}}
+
+  creds:
+    desc: Fetch kube-context for the cluster
+    dotenv: ['.env']
+    cmds:
+      - gcloud container clusters get-credentials {{.CLUSTER}} --region "$GCP_REGION"
+
+  deploy:
+    desc: Deploy the chart to the current kube-context with Helm (requires an image already pushed)
+    dotenv: ['.env']
+    cmds:
+      - |
+        : "${REGISTRY:?set REGISTRY=<region>-docker.pkg.dev/<project>/<repo>}"
+        : "${TAG:?set TAG=<image tag>}"
+        : "${INGRESS_DOMAIN:?set INGRESS_DOMAIN=<the public hostname>}"
+        helm upgrade --install {{.RELEASE}} {{.CHART_DIR}} \
+          --namespace {{.NAMESPACE}} --create-namespace \
+          --set image.repository="$REGISTRY/{{.IMAGE_NAME}}" \
+          --set image.tag="$TAG" \
+          --set domain="$INGRESS_DOMAIN" \
+          --wait --timeout 3m
+
+  dns:
+    desc: Publish the apex A record by reading the deployed Ingress IP, then re-applying the dns unit (phase 2)
+    dotenv: ['.env']
+    cmds:
+      - |
+        : "${INGRESS_DOMAIN:?set INGRESS_DOMAIN=<the public hostname>}"
+        echo "Waiting for the Ingress to be assigned a load-balancer IP..."
+        for i in $(seq 1 60); do
+          IP=$(kubectl -n {{.NAMESPACE}} get ingress {{.RELEASE}}-{{.IMAGE_NAME}} \
+            -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || true)
+          [ -n "$IP" ] && break
+          sleep 10
+        done
+        : "${IP:?the Ingress never reported a load-balancer IP — is it deployed? (task gke-ingress:deploy)}"
+        echo "Ingress IP: $IP — publishing apex A record for $INGRESS_DOMAIN"
+        (cd infra/dns && INGRESS_IP="$IP" terragrunt apply --non-interactive)
+
+  verify:
+    desc: Wait for the managed cert + DNS, then GET the public HTTPS endpoint
+    dotenv: ['.env']
+    cmds:
+      - |
+        : "${INGRESS_DOMAIN:?set INGRESS_DOMAIN=<the public hostname>}"
+        echo "Waiting for the ManagedCertificate to become Active (can take 10-20m on first issue)..."
+        for i in $(seq 1 120); do
+          STATUS=$(kubectl -n {{.NAMESPACE}} get managedcertificate {{.RELEASE}}-{{.IMAGE_NAME}} \
+            -o jsonpath='{.status.certificateStatus}' 2>/dev/null || true)
+          echo "  cert status: ${STATUS:-<pending>}"
+          [ "$STATUS" = "Active" ] && break
+          sleep 15
+        done
+        echo "Probing https://$INGRESS_DOMAIN/ ..."
+        for i in $(seq 1 30); do
+          if curl -fsS --max-time 10 "https://$INGRESS_DOMAIN/" ; then
+            echo "OK: served over HTTPS"
+            exit 0
+          fi
+          sleep 10
+        done
+        echo "FAILED: could not reach https://$INGRESS_DOMAIN/" >&2
+        exit 1
+
+  all:
+    desc: After `up`, run the full app path — build is done in CI; locally chains deploy -> dns -> verify
+    cmds:
+      - task: deploy
+      - task: dns
+      - task: verify
+
+  ci-config:
+    desc: Print the WIF provider name to set as a GitHub Actions variable
+    dir: infra
+    dotenv: ['../.env']
+    cmds:
+      - |
+        echo "Set this as a GitHub Actions repository variable:"
+        echo -n "WIF_PROVIDER="; (cd deployer-wif && terragrunt output -json provider_names | jq -r '.github')
+
+  test:
+    desc: Run the Go app tests; validate + plan as a cheap infra smoke test
+    cmds:
+      - task: test-app
+      - task: validate
+
+  test-app:
+    internal: true
+    dir: app/go
+    cmds: [go test ./...]
+
+  down:
+    desc: Destroy all infra (delete the Helm release first so the LB/Ingress is removed cleanly)
+    dotenv: ['.env']
+    cmds:
+      - helm uninstall {{.RELEASE}} --namespace {{.NAMESPACE}} --ignore-not-found --wait || true
+      - cd infra && terragrunt run --all destroy --non-interactive

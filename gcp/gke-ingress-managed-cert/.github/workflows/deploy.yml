@@ -1,0 +1,109 @@
+# Build the Go "hello world" image, push it to Artifact Registry, deploy it to the GKE Autopilot
+# cluster with Helm (classic Ingress + Google-managed TLS cert), and test the public HTTPS endpoint
+# — all keyless via Workload Identity Federation (no SA JSON key).
+#
+# Required repository variables (Settings > Secrets and variables > Actions > Variables):
+#   GCP_PROJECT       e.g. my-project
+#   GCP_REGION        e.g. us-central1
+#   GKE_CLUSTER       gke-ingress-managed-cert
+#   ARTIFACT_REPO     gke-ingress-managed-cert
+#   INGRESS_DOMAIN    the public hostname, e.g. gke-ingress.gcp.richardbatyrov.com
+#   WIF_PROVIDER      full provider resource name from `task gke-ingress:ci-config`
+#                     (projects/<num>/locations/global/workloadIdentityPools/github-ci/providers/github)
+#
+# Auth is DIRECT Workload Identity Federation — CI acts as the federated principal itself, with no
+# service account to impersonate and no JSON key.
+#
+# SCOPE: this workflow is the steady-state APP loop. It assumes the infrastructure and the public DNS
+# A record were stood up once by the operator via the Taskfile (`task gke-ingress:up` then
+# `task gke-ingress:all`). The Ingress and its ephemeral LB IP persist across these helm upgrades, so
+# the A record and managed certificate stay valid; CI just ships new image versions and re-tests.
+#
+# This workflow lives inside the lab folder. To run it from the repo root, move/symlink it to the
+# repository's top-level .github/workflows/ or trigger it manually.
+
+name: deploy-gke-ingress-managed-cert
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "gcp/gke-ingress-managed-cert/app/go/**"
+      - "gcp/gke-ingress-managed-cert/deploy/helm/**"
+      - "gcp/gke-ingress-managed-cert/.github/workflows/deploy.yml"
+
+permissions:
+  contents: read
+  id-token: write # required for GitHub to mint the OIDC token used by WIF
+
+env:
+  APP_DIR: gcp/gke-ingress-managed-cert/app/go
+  CHART_DIR: gcp/gke-ingress-managed-cert/deploy/helm/hello
+  IMAGE_NAME: hello
+  RELEASE: hello
+  NAMESPACE: hello
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Authenticate to Google Cloud (keyless, direct WIF)
+        id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          project_id: ${{ vars.GCP_PROJECT }}
+          workload_identity_provider: ${{ vars.WIF_PROVIDER }}
+
+      - name: Set up gcloud
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure Docker for Artifact Registry
+        run: gcloud auth configure-docker ${{ vars.GCP_REGION }}-docker.pkg.dev --quiet
+
+      - name: Build and push image
+        env:
+          REGISTRY: ${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT }}/${{ vars.ARTIFACT_REPO }}
+        run: |
+          IMAGE="$REGISTRY/$IMAGE_NAME:${GITHUB_SHA::12}"
+          echo "IMAGE=$IMAGE" >> "$GITHUB_ENV"
+          docker build -t "$IMAGE" "$APP_DIR"
+          docker push "$IMAGE"
+
+      - name: Get cluster credentials
+        uses: google-github-actions/get-gke-credentials@v2
+        with:
+          cluster_name: ${{ vars.GKE_CLUSTER }}
+          location: ${{ vars.GCP_REGION }}
+
+      - name: Deploy with Helm
+        env:
+          REGISTRY: ${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT }}/${{ vars.ARTIFACT_REPO }}
+        run: |
+          helm upgrade --install "$RELEASE" "$CHART_DIR" \
+            --namespace "$NAMESPACE" --create-namespace \
+            --set image.repository="$REGISTRY/$IMAGE_NAME" \
+            --set image.tag="${GITHUB_SHA::12}" \
+            --set domain="${{ vars.INGRESS_DOMAIN }}" \
+            --atomic \
+            --wait --timeout 10m
+
+      - name: Test the public HTTPS endpoint
+        env:
+          INGRESS_DOMAIN: ${{ vars.INGRESS_DOMAIN }}
+        run: |
+          echo "Probing https://$INGRESS_DOMAIN/ ..."
+          for i in $(seq 1 30); do
+            if curl -fsS --max-time 10 "https://$INGRESS_DOMAIN/"; then
+              echo "OK: served over HTTPS"
+              exit 0
+            fi
+            echo "  not ready yet (attempt $i); retrying..."
+            sleep 10
+          done
+          echo "FAILED: could not reach https://$INGRESS_DOMAIN/ over HTTPS." >&2
+          echo "If this is a brand-new environment, ensure the operator ran 'task gke-ingress:dns'" >&2
+          echo "to publish the A record and that the managed certificate has gone Active." >&2
+          exit 1
