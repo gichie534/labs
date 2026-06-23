@@ -1,0 +1,55 @@
+# The one-shot reader Job. It runs under the KSA above and reads from both buckets, printing the
+# report to stdout (visible via `kubectl logs` and asserted by `task gke-wi:test`).
+#
+# Modeled as a Helm post-install/post-upgrade hook so each `helm upgrade` reruns it (a Job's pod
+# template is otherwise immutable). `before-hook-creation` deletes the prior Job just before the
+# next run, so the most recent Job — and its logs — persist for assertions.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "reader.fullname" . }}
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "reader.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-weight": "0"
+    "helm.sh/hook-delete-policy": before-hook-creation
+spec:
+  backoffLimit: {{ .Values.backoffLimit }}
+  # Keep finished Jobs around long enough to read logs and assert, then auto-clean.
+  ttlSecondsAfterFinished: 600
+  template:
+    metadata:
+      labels:
+        {{- include "reader.labels" . | nindent 8 }}
+    spec:
+      restartPolicy: Never
+      serviceAccountName: {{ .Values.serviceAccount.name }}
+      securityContext:
+        runAsNonRoot: true
+        # Distroless "nonroot" is UID/GID 65532; state it numerically so the kubelet can verify
+        # non-root before start under runAsNonRoot.
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: reader
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          env:
+            - name: BUCKET_ALLOWED
+              value: "{{ .Values.buckets.allowed }}"
+            - name: BUCKET_DENIED
+              value: "{{ .Values.buckets.denied }}"
+            - name: OBJECT_NAME
+              value: "{{ .Values.objectName }}"
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}

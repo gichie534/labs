@@ -1,0 +1,6 @@
+apiVersion: v2
+name: reader
+description: One-shot GCS reader Job that demonstrates direct Workload Identity Federation for GKE.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

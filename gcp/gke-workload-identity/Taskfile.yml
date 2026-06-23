@@ -1,0 +1,200 @@
+version: '3'
+
+# Lifecycle for the gcp/gke-workload-identity lab.
+#
+# Demonstrates DIRECT Workload Identity Federation for GKE: a Kubernetes service account is itself
+# an IAM principal (no Google service account, no key, no impersonation). The KSA is granted
+# roles/storage.objectViewer on an "allowed" GCS bucket and nothing on a "denied" one. A one-shot Go
+# Job (Helm) reads from both buckets using the Cloud Storage SDK and reports per-bucket OK/DENIED.
+# `task gke-wi:test` asserts allowed=OK and denied=DENIED — proving the authorization gate.
+#
+# Flow:
+#   1. init-state  -> one-time: create the GCS bucket for Terraform state.
+#   2. up          -> VPC, Autopilot cluster, registry, two data buckets, the KSA IAM grant, CI WIF.
+#   3. seed        -> write a message.txt into each data bucket (the data the Job reads).
+#   4. build       -> build + push the reader image (mirrors CI).
+#   5. deploy      -> helm install the Job (runs under the granted KSA).
+#   6. test        -> assert the Job's report: allowed=OK (prints data), denied=DENIED (403).
+#   7. down        -> destroy everything.
+# `task gke-wi:all` chains seed -> deploy -> test after `up` + `build`/push.
+#
+# Only init-state, up, seed, build(push), and deploy create/modify cloud resources. fmt/validate/
+# plan are cost-free. Config is loaded from a local `.env` (see .env.example); `.env` is gitignored.
+# Per-task `dotenv:` (not a global one) because the root Taskfile includes this file; tasks with
+# `dir: infra` load `['../.env']`, the rest `['.env']`.
+
+vars:
+  APP_DIR: app/go
+  CHART_DIR: deploy/helm/reader
+  IMAGE_NAME: reader
+  RELEASE: reader
+  NAMESPACE: wifdemo
+  CLUSTER: gke-workload-identity
+  REPO: gke-workload-identity
+
+tasks:
+  default:
+    cmds: [task --list]
+    silent: true
+
+  init-state:
+    desc: Create the GCS bucket for Terraform/Terragrunt remote state (idempotent; run once before `up`)
+    dotenv: ['.env']
+    cmds:
+      - |
+        : "${GCP_PROJECT:?set GCP_PROJECT=<project id>}"
+        : "${TF_STATE_BUCKET:?set TF_STATE_BUCKET=<bucket name (no gs:// prefix)>}"
+        LOCATION="${GCP_REGION:-us-central1}"
+        if gcloud storage buckets describe "gs://$TF_STATE_BUCKET" --project "$GCP_PROJECT" >/dev/null 2>&1; then
+          echo "Bucket gs://$TF_STATE_BUCKET already exists — nothing to do."
+        else
+          echo "Creating gs://$TF_STATE_BUCKET in $LOCATION..."
+          gcloud storage buckets create "gs://$TF_STATE_BUCKET" \
+            --project "$GCP_PROJECT" \
+            --location "$LOCATION" \
+            --uniform-bucket-level-access \
+            --public-access-prevention
+        fi
+        gcloud storage buckets update "gs://$TF_STATE_BUCKET" --versioning
+
+  fmt:
+    desc: Format Terragrunt HCL and Go
+    cmds:
+      - terragrunt hcl format
+      - gofmt -w ./app/go
+
+  validate:
+    desc: Validate every infra unit (cost-free)
+    dir: infra
+    dotenv: ['../.env']
+    cmds: [terragrunt run --all validate]
+
+  lint:
+    desc: Lint Terraform/Terragrunt and the Helm chart
+    cmds:
+      - tflint --recursive
+      - helm lint {{.CHART_DIR}} --set image.repository=example/reader --set image.tag=dev --set buckets.allowed=a --set buckets.denied=d
+
+  plan:
+    desc: Plan all infra units (cost-free)
+    dir: infra
+    dotenv: ['../.env']
+    cmds: [terragrunt run --all plan]
+
+  up:
+    desc: Provision infra — VPC, Autopilot cluster, registry, two data buckets, the KSA IAM grant, CI WIF (creates cloud resources)
+    dir: infra
+    dotenv: ['../.env']
+    cmds: [terragrunt run --all apply --non-interactive]
+
+  seed:
+    desc: Write a message.txt into each data bucket (the data the Job reads)
+    dotenv: ['.env']
+    cmds:
+      - |
+        : "${GCP_PROJECT:?set GCP_PROJECT=<project id>}"
+        ALLOWED="$GCP_PROJECT-wif-allowed"
+        DENIED="$GCP_PROJECT-wif-denied"
+        TMP="$(mktemp -d)"
+        echo "hello from the ALLOWED bucket — the workload's KSA can read this" > "$TMP/message.txt"
+        gcloud storage cp "$TMP/message.txt" "gs://$ALLOWED/message.txt" --project "$GCP_PROJECT"
+        echo "secret from the DENIED bucket — the workload's KSA must NOT read this" > "$TMP/message.txt"
+        gcloud storage cp "$TMP/message.txt" "gs://$DENIED/message.txt" --project "$GCP_PROJECT"
+        rm -rf "$TMP"
+        echo "Seeded gs://$ALLOWED and gs://$DENIED with message.txt"
+
+  build:
+    desc: Build the Go reader image locally (linux/amd64 to match GKE nodes)
+    cmds:
+      - docker build --platform linux/amd64 -t {{.IMAGE_NAME}}:dev {{.APP_DIR}}
+
+  push:
+    desc: Tag the local reader:dev image for Artifact Registry and push it (mirrors CI)
+    deps: [build]
+    dotenv: ['.env']
+    cmds:
+      - |
+        : "${GCP_PROJECT:?set GCP_PROJECT=<project id>}"
+        : "${GCP_REGION:?set GCP_REGION=<region>}"
+        REGISTRY="$GCP_REGION-docker.pkg.dev/$GCP_PROJECT/{{.REPO}}"
+        gcloud auth configure-docker "$GCP_REGION-docker.pkg.dev" --quiet
+        docker tag {{.IMAGE_NAME}}:dev "$REGISTRY/{{.IMAGE_NAME}}:dev"
+        docker push "$REGISTRY/{{.IMAGE_NAME}}:dev"
+        echo "Pushed $REGISTRY/{{.IMAGE_NAME}}:dev"
+
+  creds:
+    desc: Fetch kube-context for the cluster
+    dotenv: ['.env']
+    cmds:
+      - gcloud container clusters get-credentials {{.CLUSTER}} --region "$GCP_REGION"
+
+  deploy:
+    desc: Deploy the reader Job with Helm (requires an image already pushed and buckets seeded)
+    dotenv: ['.env']
+    vars:
+      TAG: '{{.TAG | default "dev"}}'
+    cmds:
+      - |
+        : "${GCP_PROJECT:?set GCP_PROJECT=<project id>}"
+        : "${GCP_REGION:?set GCP_REGION=<region>}"
+        REGISTRY="$GCP_REGION-docker.pkg.dev/$GCP_PROJECT/{{.REPO}}"
+        helm upgrade --install {{.RELEASE}} {{.CHART_DIR}} \
+          --namespace {{.NAMESPACE}} --create-namespace \
+          --set image.repository="$REGISTRY/{{.IMAGE_NAME}}" \
+          --set image.tag="{{.TAG}}" \
+          --set buckets.allowed="$GCP_PROJECT-wif-allowed" \
+          --set buckets.denied="$GCP_PROJECT-wif-denied" \
+          --wait --timeout 5m
+
+  test:
+    desc: Run the Go app tests, then (if a cluster context is set) assert the deployed Job's report
+    cmds:
+      - task: test-app
+      - task: test-assert
+
+  test-app:
+    internal: true
+    dir: app/go
+    cmds: [go test ./...]
+
+  test-assert:
+    desc: Assert the reader Job reported allowed=OK and denied=DENIED (requires a deployed Job)
+    dotenv: ['.env']
+    cmds:
+      - |
+        JOB="{{.RELEASE}}-reader"
+        echo "Waiting for Job $JOB to complete..."
+        kubectl -n {{.NAMESPACE}} wait --for=condition=complete --timeout=180s "job/$JOB" \
+          || kubectl -n {{.NAMESPACE}} wait --for=condition=failed --timeout=10s "job/$JOB" || true
+        LOGS="$(kubectl -n {{.NAMESPACE}} logs "job/$JOB")"
+        echo "------ Job report ------"
+        echo "$LOGS"
+        echo "------------------------"
+        echo "$LOGS" | grep -q "RESULT access=allowed .* status=OK" \
+          || { echo "ASSERTION FAILED: expected allowed bucket read to succeed" >&2; exit 1; }
+        echo "$LOGS" | grep -q "RESULT access=denied .* status=DENIED" \
+          || { echo "ASSERTION FAILED: expected denied bucket read to be denied" >&2; exit 1; }
+        echo "OK: allowed=OK and denied=DENIED — Workload Identity authorization verified"
+
+  all:
+    desc: After `up` + build/push, chain seed -> deploy -> test
+    cmds:
+      - task: seed
+      - task: deploy
+      - task: test-assert
+
+  ci-config:
+    desc: Print the GitHub WIF provider name to set as a GitHub Actions variable
+    dir: infra
+    dotenv: ['../.env']
+    cmds:
+      - |
+        echo "Set this as a GitHub Actions repository variable:"
+        echo -n "WIF_PROVIDER="; (cd deployer-wif && terragrunt output -json provider_names | jq -r '.github')
+
+  down:
+    desc: Destroy everything (uninstall the Helm release first, then destroy infra)
+    dotenv: ['.env']
+    cmds:
+      - helm uninstall {{.RELEASE}} --namespace {{.NAMESPACE}} --ignore-not-found --wait || true
+      - cd infra && terragrunt run --all destroy --non-interactive

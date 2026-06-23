@@ -1,0 +1,36 @@
+# Image is overridden at deploy time:
+#   helm upgrade --install --set image.repository=... --set image.tag=...
+image:
+  repository: REPLACE_WITH_REGISTRY_URL/reader
+  tag: latest
+  pullPolicy: IfNotPresent
+
+# The Kubernetes namespace and service account the Job runs as. These MUST match the
+# infra/workload-identity unit's kubernetes_namespace / kubernetes_service_account, because that
+# unit grants this exact KSA principal read access to the allowed bucket. With direct Workload
+# Identity Federation the KSA needs NO annotation (that annotation is only for the older GSA
+# impersonation pattern).
+namespace: wifdemo
+serviceAccount:
+  name: reader
+
+# The two demo buckets the Job reads from. Overridden at deploy time with the project-derived names:
+#   --set buckets.allowed=$PROJECT-wif-allowed --set buckets.denied=$PROJECT-wif-denied
+buckets:
+  allowed: REPLACE_WITH_ALLOWED_BUCKET
+  denied: REPLACE_WITH_DENIED_BUCKET
+
+# Object the seed step writes into each bucket and the Job reads back.
+objectName: message.txt
+
+# Autopilot requires explicit resource requests; modest defaults for a short-lived Job.
+resources:
+  requests:
+    cpu: 250m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 256Mi
+
+# Job knobs.
+backoffLimit: 2

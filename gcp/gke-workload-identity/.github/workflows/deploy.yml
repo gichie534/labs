@@ -1,0 +1,104 @@
+# Build the Go reader image, push it to Artifact Registry, deploy the one-shot reader Job to the GKE
+# Autopilot cluster with Helm, and assert its Workload-Identity report — all keyless via GitHub
+# Workload Identity Federation (no SA JSON key).
+#
+# Required repository variables (Settings > Secrets and variables > Actions > Variables):
+#   GCP_PROJECT     e.g. my-project
+#   GCP_REGION      e.g. us-central1
+#   GKE_CLUSTER     gke-workload-identity
+#   ARTIFACT_REPO   gke-workload-identity
+#   WIF_PROVIDER    full provider resource name from `task gke-wi:ci-config`
+#                   (projects/<num>/locations/global/workloadIdentityPools/github-ci-gke-wi/providers/github)
+#
+# Pipeline auth is DIRECT GitHub->GCP WIF — CI acts as the federated principal itself, no key.
+# (Distinct from the lab's SUBJECT: the in-cluster GKE KSA->IAM federation that the Job exercises.)
+#
+# SCOPE: steady-state app loop. Assumes infra + the two seeded data buckets + the KSA IAM grant were
+# stood up once by the operator via the Taskfile (`task gke-wi:up`, `task gke-wi:seed`). CI ships new
+# image versions, reruns the Job, and re-asserts the report.
+#
+# This workflow lives inside the lab folder. To run it from the repo root, move/symlink it to the
+# repository's top-level .github/workflows/ or trigger it manually.
+
+name: deploy-gke-workload-identity
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "gcp/gke-workload-identity/app/go/**"
+      - "gcp/gke-workload-identity/deploy/helm/**"
+      - "gcp/gke-workload-identity/.github/workflows/deploy.yml"
+
+permissions:
+  contents: read
+  id-token: write # required for GitHub to mint the OIDC token used by WIF
+
+env:
+  APP_DIR: gcp/gke-workload-identity/app/go
+  CHART_DIR: gcp/gke-workload-identity/deploy/helm/reader
+  IMAGE_NAME: reader
+  RELEASE: reader
+  NAMESPACE: wifdemo
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Authenticate to Google Cloud (keyless, direct WIF)
+        id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          project_id: ${{ vars.GCP_PROJECT }}
+          workload_identity_provider: ${{ vars.WIF_PROVIDER }}
+
+      - name: Set up gcloud
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure Docker for Artifact Registry
+        run: gcloud auth configure-docker ${{ vars.GCP_REGION }}-docker.pkg.dev --quiet
+
+      - name: Build and push image
+        env:
+          REGISTRY: ${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT }}/${{ vars.ARTIFACT_REPO }}
+        run: |
+          IMAGE="$REGISTRY/$IMAGE_NAME:${GITHUB_SHA::12}"
+          docker build --platform linux/amd64 -t "$IMAGE" "$APP_DIR"
+          docker push "$IMAGE"
+
+      - name: Get cluster credentials
+        uses: google-github-actions/get-gke-credentials@v2
+        with:
+          cluster_name: ${{ vars.GKE_CLUSTER }}
+          location: ${{ vars.GCP_REGION }}
+
+      - name: Deploy the reader Job with Helm
+        env:
+          REGISTRY: ${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT }}/${{ vars.ARTIFACT_REPO }}
+        run: |
+          helm upgrade --install "$RELEASE" "$CHART_DIR" \
+            --namespace "$NAMESPACE" --create-namespace \
+            --set image.repository="$REGISTRY/$IMAGE_NAME" \
+            --set image.tag="${GITHUB_SHA::12}" \
+            --set buckets.allowed="${{ vars.GCP_PROJECT }}-wif-allowed" \
+            --set buckets.denied="${{ vars.GCP_PROJECT }}-wif-denied" \
+            --wait --timeout 5m
+
+      - name: Assert the Workload Identity report
+        run: |
+          JOB="$RELEASE-reader"
+          echo "Waiting for Job $JOB to complete..."
+          kubectl -n "$NAMESPACE" wait --for=condition=complete --timeout=180s "job/$JOB" \
+            || kubectl -n "$NAMESPACE" wait --for=condition=failed --timeout=10s "job/$JOB" || true
+          LOGS="$(kubectl -n "$NAMESPACE" logs "job/$JOB")"
+          echo "------ Job report ------"
+          echo "$LOGS"
+          echo "------------------------"
+          echo "$LOGS" | grep -q "RESULT access=allowed .* status=OK" \
+            || { echo "ASSERTION FAILED: expected allowed bucket read to succeed" >&2; exit 1; }
+          echo "$LOGS" | grep -q "RESULT access=denied .* status=DENIED" \
+            || { echo "ASSERTION FAILED: expected denied bucket read to be denied" >&2; exit 1; }
+          echo "OK: allowed=OK and denied=DENIED — Workload Identity authorization verified"
