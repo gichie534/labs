@@ -28,6 +28,9 @@ includes:
   gke-wi:
     taskfile: gcp/gke-workload-identity/Taskfile.yml
     dir: gcp/gke-workload-identity
+  csi:
+    taskfile: gcp/gke-secret-manager-csi/Taskfile.yml
+    dir: gcp/gke-secret-manager-csi
   eks-cni:
     taskfile: aws/eks-vpc-cni-ip-allocation/Taskfile.yml
     dir: aws/eks-vpc-cni-ip-allocation

@@ -1,0 +1,77 @@
+# Minimal alpine Deployment that demonstrates both Secret Manager consumption patterns:
+#
+#   - csi-volume-secret is mounted by the CSI driver (secrets-store-gke.csi.k8s.io) into
+#     /mnt/secrets, exposing /mnt/secrets/vol-secret as a tmpfs file.
+#
+#   - csi-env-secret is materialized by SecretSync into a Kubernetes Secret named "csi-env-secret"
+#     (key ENV_SECRET), which is consumed via valueFrom.secretKeyRef.
+#
+# The container loops every 30s and logs both values so a `kubectl logs` shows them.
+#
+# A note on Autopilot: SecretProviderClass-backed CSI volumes are referenced via volumeAttributes
+# secretProviderClass, and Autopilot allocates the right node automatically (no nodeSelector).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: secret-printer
+  namespace: csi-demo
+  labels:
+    app: secret-printer
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: secret-printer
+  template:
+    metadata:
+      labels:
+        app: secret-printer
+    spec:
+      serviceAccountName: secret-reader
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: printer
+          image: alpine:3.20
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              while true; do
+                echo "$(date -u +%FT%TZ) volume=$(cat /mnt/secrets/vol-secret) env=${ENV_SECRET}"
+                sleep 30
+              done
+          env:
+            - name: ENV_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: csi-env-secret
+                  key: ENV_SECRET
+          volumeMounts:
+            - name: vol-secret
+              mountPath: /mnt/secrets
+              readOnly: true
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 100m
+              memory: 64Mi
+            limits:
+              cpu: 250m
+              memory: 128Mi
+      volumes:
+        - name: vol-secret
+          csi:
+            driver: secrets-store-gke.csi.k8s.io
+            readOnly: true
+            volumeAttributes:
+              secretProviderClass: csi-volume-secret

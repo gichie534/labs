@@ -1,0 +1,14 @@
+# Plain kustomize bundle (no Helm) — minimal: namespace, KSA, two SPCs, one SecretSync, one
+# Deployment. `task csi:deploy` substitutes ${PROJECT_ID} via envsubst before kubectl apply.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: csi-demo
+
+resources:
+  - namespace.yaml
+  - serviceaccount.yaml
+  - secretproviderclass-volume.yaml
+  - secretproviderclass-env.yaml
+  - secretsync-env.yaml
+  - deployment.yaml

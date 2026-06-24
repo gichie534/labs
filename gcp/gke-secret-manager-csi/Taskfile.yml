@@ -1,0 +1,121 @@
+version: '3'
+
+# Lifecycle for the gcp/gke-secret-manager-csi lab.
+#
+# Demonstrates the GKE-managed Secret Manager add-on (the Google build of the Secrets Store CSI
+# Driver + GCP provider) plus its SecretSync feature, used to expose two Secret Manager secrets
+# to a workload through both consumption patterns at once:
+#   - csi-volume-secret -> CSI tmpfs file under /mnt/secrets
+#   - csi-env-secret    -> SecretSync-materialized K8s Secret consumed via valueFrom.secretKeyRef
+#
+# Flow:
+#   1. init-state -> one-time: create the GCS bucket for Terraform state.
+#   2. up         -> VPC, Autopilot cluster (with the add-on + SecretSync enabled), two secrets
+#                    (with seeded test values), and the KSA->Secret Manager IAM grants.
+#   3. creds      -> fetch kube-context for the cluster.
+#   4. deploy     -> kubectl apply the namespace, KSA, two SPCs, SecretSync, Deployment.
+#   5. logs       -> tail the Deployment so you can see both values being printed.
+#   6. down       -> destroy everything.
+#
+# Only init-state, up, and deploy create/modify cloud resources. fmt/validate/plan are cost-free.
+# Config is loaded from `.env` (see .env.example); `.env` is gitignored. Per-task `dotenv:` (not a
+# global one) because the root Taskfile includes this file; tasks with `dir: infra` load
+# `['../.env']`, the rest `['.env']`.
+
+vars:
+  CLUSTER: gke-secret-manager-csi
+  NAMESPACE: csi-demo
+
+tasks:
+  default:
+    cmds: [task --list]
+    silent: true
+
+  init-env:
+    desc: Create a local .env from the template (no-op if .env already exists, so it never clobbers your values)
+    cmds:
+      - |
+        if [ -f .env ]; then
+          echo ".env already exists — leaving it untouched."
+        else
+          cp .env.example .env
+          echo "Created .env from .env.example — fill in your values."
+        fi
+
+  init-state:
+    desc: Create the GCS bucket for Terraform/Terragrunt remote state (idempotent; run once before `up`)
+    dotenv: ['.env']
+    cmds:
+      - |
+        : "${GCP_PROJECT:?set GCP_PROJECT=<project id>}"
+        : "${TF_STATE_BUCKET:?set TF_STATE_BUCKET=<bucket name (no gs:// prefix)>}"
+        LOCATION="${GCP_REGION:-us-central1}"
+        if gcloud storage buckets describe "gs://$TF_STATE_BUCKET" --project "$GCP_PROJECT" >/dev/null 2>&1; then
+          echo "Bucket gs://$TF_STATE_BUCKET already exists — nothing to do."
+        else
+          echo "Creating gs://$TF_STATE_BUCKET in $LOCATION..."
+          gcloud storage buckets create "gs://$TF_STATE_BUCKET" \
+            --project "$GCP_PROJECT" \
+            --location "$LOCATION" \
+            --uniform-bucket-level-access \
+            --public-access-prevention
+        fi
+        gcloud storage buckets update "gs://$TF_STATE_BUCKET" --versioning
+
+  fmt:
+    desc: Format Terragrunt HCL
+    cmds:
+      - terragrunt hcl format
+
+  validate:
+    desc: Validate every infra unit (cost-free)
+    dir: infra
+    dotenv: ['../.env']
+    cmds: [terragrunt run --all validate]
+
+  plan:
+    desc: Plan all infra units (cost-free)
+    dir: infra
+    dotenv: ['../.env']
+    cmds: [terragrunt run --all plan]
+
+  up:
+    desc: Provision infra — VPC, Autopilot cluster (Secret Manager add-on + SecretSync on), two seeded secrets, KSA IAM grants
+    dir: infra
+    dotenv: ['../.env']
+    cmds: [terragrunt run --all apply --non-interactive]
+
+  creds:
+    desc: Fetch kube-context for the cluster
+    dotenv: ['.env']
+    cmds:
+      - gcloud container clusters get-credentials {{.CLUSTER}} --region "$GCP_REGION"
+
+  deploy:
+    desc: Apply the demo workload (namespace, KSA, two SPCs, SecretSync, Deployment)
+    dotenv: ['.env']
+    cmds:
+      - |
+        : "${GCP_PROJECT:?set GCP_PROJECT=<project id>}"
+        # The two SPCs reference each secret by full resource name including the project; substitute
+        # ${PROJECT_ID} at apply time so the manifests stay environment-agnostic in git.
+        TMP="$(mktemp -d)"
+        cp -R deploy/* "$TMP/"
+        for f in "$TMP"/secretproviderclass-*.yaml; do
+          PROJECT_ID="$GCP_PROJECT" envsubst '$PROJECT_ID' < "$f" > "$f.tmp" && mv "$f.tmp" "$f"
+        done
+        kubectl apply -k "$TMP"
+        rm -rf "$TMP"
+        kubectl -n {{.NAMESPACE}} rollout status deployment/secret-printer --timeout=120s
+
+  logs:
+    desc: Tail the secret-printer Deployment logs so you can see both values being printed
+    cmds:
+      - kubectl -n {{.NAMESPACE}} logs deploy/secret-printer -f --tail=20
+
+  down:
+    desc: Destroy everything (delete the workload first, then destroy infra)
+    dotenv: ['.env']
+    cmds:
+      - kubectl delete -k deploy --ignore-not-found || true
+      - cd infra && terragrunt run --all destroy --non-interactive
