@@ -1,0 +1,6 @@
+apiVersion: v2
+name: sqsapp
+description: Writer + reader Deployments that exchange messages over AWS SQS from GKE, authenticating keylessly via OIDC web identity federation.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

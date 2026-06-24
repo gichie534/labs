@@ -1,0 +1,72 @@
+# Writer Deployment: runs MODE=writer under the `writer` KSA, sends a timestamped message every
+# SEND_INTERVAL and logs each send.
+#
+# Keyless AWS auth: a projected service-account token (audience sts.amazonaws.com) is mounted at
+# /var/run/secrets/aws/token. AWS_ROLE_ARN + AWS_WEB_IDENTITY_TOKEN_FILE point the SDK at it, so the
+# SDK calls sts:AssumeRoleWithWebIdentity itself — no static keys. The role assumed here may only
+# sqs:SendMessage (enforced by IAM in infra/federation).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: writer
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "sqsapp.labels" . | nindent 4 }}
+    app.kubernetes.io/name: writer
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: writer
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  template:
+    metadata:
+      labels:
+        {{- include "sqsapp.labels" . | nindent 8 }}
+        app.kubernetes.io/name: writer
+    spec:
+      serviceAccountName: {{ .Values.writer.serviceAccountName }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: writer
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          env:
+            - name: MODE
+              value: "writer"
+            - name: QUEUE_URL
+              value: "{{ .Values.aws.queueUrl }}"
+            - name: SEND_INTERVAL
+              value: "{{ .Values.writer.sendInterval }}"
+            - name: AWS_REGION
+              value: "{{ .Values.aws.region }}"
+            - name: AWS_ROLE_ARN
+              value: "{{ .Values.writer.roleArn }}"
+            - name: AWS_WEB_IDENTITY_TOKEN_FILE
+              value: /var/run/secrets/aws/token
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: aws-token
+              mountPath: /var/run/secrets/aws
+              readOnly: true
+      volumes:
+        # Projected SA token scoped to the AWS STS audience. kubelet rotates it; the SDK re-reads it.
+        - name: aws-token
+          projected:
+            sources:
+              - serviceAccountToken:
+                  audience: {{ .Values.tokenAudience }}
+                  expirationSeconds: 3600
+                  path: token

@@ -1,0 +1,67 @@
+# Reader Deployment: runs MODE=reader under the `reader` KSA, long-polls the queue, logs each
+# received message body, and deletes it.
+#
+# Same keyless AWS auth as the writer (projected token, AssumeRoleWithWebIdentity), but the role
+# assumed here may only sqs:ReceiveMessage / DeleteMessage / GetQueueAttributes — it cannot send.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: reader
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "sqsapp.labels" . | nindent 4 }}
+    app.kubernetes.io/name: reader
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: reader
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  template:
+    metadata:
+      labels:
+        {{- include "sqsapp.labels" . | nindent 8 }}
+        app.kubernetes.io/name: reader
+    spec:
+      serviceAccountName: {{ .Values.reader.serviceAccountName }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: reader
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          env:
+            - name: MODE
+              value: "reader"
+            - name: QUEUE_URL
+              value: "{{ .Values.aws.queueUrl }}"
+            - name: AWS_REGION
+              value: "{{ .Values.aws.region }}"
+            - name: AWS_ROLE_ARN
+              value: "{{ .Values.reader.roleArn }}"
+            - name: AWS_WEB_IDENTITY_TOKEN_FILE
+              value: /var/run/secrets/aws/token
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: aws-token
+              mountPath: /var/run/secrets/aws
+              readOnly: true
+      volumes:
+        - name: aws-token
+          projected:
+            sources:
+              - serviceAccountToken:
+                  audience: {{ .Values.tokenAudience }}
+                  expirationSeconds: 3600
+                  path: token

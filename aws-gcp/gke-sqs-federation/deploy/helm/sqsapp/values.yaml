@@ -1,0 +1,39 @@
+# Image is overridden at deploy time:
+#   helm upgrade --install --set image.repository=... --set image.tag=...
+image:
+  repository: REPLACE_WITH_REGISTRY_URL/sqsapp
+  tag: latest
+  pullPolicy: IfNotPresent
+
+# Namespace both Deployments and their KSAs live in. MUST match infra/federation's k8s_namespace.
+namespace: sqsdemo
+
+# AWS wiring. All overridden at deploy time from Terraform outputs / .env:
+#   --set aws.region=... --set aws.queueUrl=... --set writer.roleArn=... --set reader.roleArn=...
+aws:
+  region: REPLACE_WITH_AWS_REGION
+  queueUrl: REPLACE_WITH_QUEUE_URL
+
+# Audience of the projected service-account token. AWS STS requires the token's `aud` to be in the
+# OIDC provider's client_id_list — the federation unit sets that to sts.amazonaws.com.
+tokenAudience: sts.amazonaws.com
+
+# The writer: a Deployment running MODE=writer under KSA `writer`, assuming the send-only role.
+writer:
+  serviceAccountName: writer
+  roleArn: REPLACE_WITH_WRITER_ROLE_ARN
+  sendInterval: "5" # seconds between sends (plain int or Go duration like "5s")
+
+# The reader: a Deployment running MODE=reader under KSA `reader`, assuming the receive-only role.
+reader:
+  serviceAccountName: reader
+  roleArn: REPLACE_WITH_READER_ROLE_ARN
+
+# Autopilot requires explicit resource requests; modest defaults for these tiny long-running pods.
+resources:
+  requests:
+    cpu: 100m
+    memory: 64Mi
+  limits:
+    cpu: 250m
+    memory: 128Mi

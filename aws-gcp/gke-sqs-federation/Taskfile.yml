@@ -1,0 +1,198 @@
+version: '3'
+
+# Lifecycle for the aws-gcp/gke-sqs-federation lab.
+#
+# Demonstrates KEYLESS cross-cloud auth: GKE pods authenticate to AWS SQS via OIDC web identity
+# federation (the GKE cluster is an OIDC provider; AWS assumes IAM roles from its tokens — no static
+# keys). A writer Deployment sends timestamped messages; a reader Deployment receives, logs, and
+# deletes them. Two KSAs -> two least-privilege IAM roles (writer: send-only, reader: receive-only).
+#
+# Flow:
+#   1. init-state -> one-time: create the GCS bucket for Terraform state.
+#   2. up         -> VPC, Autopilot cluster, registry (GCP) + SQS queue, OIDC provider + 2 roles (AWS).
+#   3. build/push -> build the writer/reader image and push to Artifact Registry.
+#   4. creds      -> fetch the cluster kube-context.
+#   5. deploy     -> helm install both Deployments, wired with the queue URL + role ARNs from outputs.
+#   6. test       -> app unit tests, then assert the reader logged a message the writer sent.
+#   7. down       -> uninstall the release, then destroy infra.
+#
+# Only init-state, up, push, and deploy touch cloud resources. fmt/validate/plan are cost-free.
+# Config is loaded from a local `.env` (see .env.example); `.env` is gitignored. Per-task `dotenv:`
+# (not a global one) because the root Taskfile includes this file; tasks with `dir: infra` load
+# `['../.env']`, the rest `['.env']`.
+
+vars:
+  APP_DIR: app/go
+  CHART_DIR: deploy/helm/sqsapp
+  IMAGE_NAME: sqsapp
+  RELEASE: sqsapp
+  NAMESPACE: sqsdemo
+  CLUSTER: gke-sqs-federation
+  REPO: gke-sqs-federation
+
+tasks:
+  default:
+    cmds: [task --list]
+    silent: true
+
+  init-env:
+    desc: Create a local .env from the template (no-op if .env already exists, so it never clobbers your values)
+    cmds:
+      - |
+        if [ -f .env ]; then
+          echo ".env already exists — leaving it untouched."
+        else
+          cp .env.example .env
+          echo "Created .env from .env.example — fill in your values."
+        fi
+
+  init-state:
+    desc: Create the GCS bucket for Terraform/Terragrunt remote state (idempotent; run once before `up`)
+    dotenv: ['.env']
+    cmds:
+      - |
+        : "${GCP_PROJECT:?set GCP_PROJECT=<project id>}"
+        : "${TF_STATE_BUCKET:?set TF_STATE_BUCKET=<bucket name (no gs:// prefix)>}"
+        LOCATION="${GCP_REGION:-us-central1}"
+        if gcloud storage buckets describe "gs://$TF_STATE_BUCKET" --project "$GCP_PROJECT" >/dev/null 2>&1; then
+          echo "Bucket gs://$TF_STATE_BUCKET already exists — nothing to do."
+        else
+          echo "Creating gs://$TF_STATE_BUCKET in $LOCATION..."
+          gcloud storage buckets create "gs://$TF_STATE_BUCKET" \
+            --project "$GCP_PROJECT" \
+            --location "$LOCATION" \
+            --uniform-bucket-level-access \
+            --public-access-prevention
+        fi
+        gcloud storage buckets update "gs://$TF_STATE_BUCKET" --versioning
+
+  fmt:
+    desc: Format Terragrunt HCL and Go
+    cmds:
+      - terragrunt hcl format
+      - gofmt -w ./app/go
+
+  validate:
+    desc: Validate every infra unit (cost-free)
+    dir: infra
+    dotenv: ['../.env']
+    cmds: [terragrunt run --all validate]
+
+  lint:
+    desc: Lint Terraform/Terragrunt and the Helm chart
+    cmds:
+      - tflint --recursive
+      - helm lint {{.CHART_DIR}} --set image.repository=example/sqsapp --set image.tag=dev --set aws.region=us-east-1 --set aws.queueUrl=https://example --set writer.roleArn=arn:aws:iam::1:role/w --set reader.roleArn=arn:aws:iam::1:role/r
+
+  plan:
+    desc: Plan all infra units (cost-free)
+    dir: infra
+    dotenv: ['../.env']
+    cmds: [terragrunt run --all plan]
+
+  up:
+    desc: Provision infra — VPC, Autopilot cluster, registry (GCP) + SQS queue, OIDC provider + 2 roles (AWS) (creates cloud resources)
+    dir: infra
+    dotenv: ['../.env']
+    cmds: [terragrunt run --all apply --non-interactive]
+
+  build:
+    desc: Build the writer/reader image locally (linux/amd64 to match GKE nodes)
+    cmds:
+      - docker build --platform linux/amd64 -t {{.IMAGE_NAME}}:dev {{.APP_DIR}}
+
+  push:
+    desc: Tag the local sqsapp:dev image for Artifact Registry and push it
+    deps: [build]
+    dotenv: ['.env']
+    cmds:
+      - |
+        : "${GCP_PROJECT:?set GCP_PROJECT=<project id>}"
+        : "${GCP_REGION:?set GCP_REGION=<region>}"
+        REGISTRY="$GCP_REGION-docker.pkg.dev/$GCP_PROJECT/{{.REPO}}"
+        gcloud auth configure-docker "$GCP_REGION-docker.pkg.dev" --quiet
+        docker tag {{.IMAGE_NAME}}:dev "$REGISTRY/{{.IMAGE_NAME}}:dev"
+        docker push "$REGISTRY/{{.IMAGE_NAME}}:dev"
+        echo "Pushed $REGISTRY/{{.IMAGE_NAME}}:dev"
+
+  creds:
+    desc: Fetch kube-context for the cluster
+    dotenv: ['.env']
+    cmds:
+      - gcloud container clusters get-credentials {{.CLUSTER}} --region "$GCP_REGION"
+
+  deploy:
+    desc: Deploy the writer + reader Deployments with Helm (requires an image already pushed)
+    dotenv: ['.env']
+    vars:
+      TAG: '{{.TAG | default "dev"}}'
+    cmds:
+      # Terraform outputs are read here (inside cmds, where dotenv is active) rather than in `sh:`
+      # vars — `sh:` vars do NOT inherit the task's dotenv env, so terragrunt would run without
+      # TF_STATE_BUCKET and generate a placeholder backend, poisoning the cache.
+      - |
+        : "${GCP_PROJECT:?set GCP_PROJECT=<project id>}"
+        : "${GCP_REGION:?set GCP_REGION=<region>}"
+        : "${AWS_REGION:?set AWS_REGION=<region>}"
+        : "${TF_STATE_BUCKET:?set TF_STATE_BUCKET=<bucket name>}"
+        REGISTRY="$GCP_REGION-docker.pkg.dev/$GCP_PROJECT/{{.REPO}}"
+        QUEUE_URL="$(cd infra/queue && terragrunt output -raw url)"
+        WRITER_ROLE_ARN="$(cd infra/federation && terragrunt output -json role_arns | jq -r '.writer')"
+        READER_ROLE_ARN="$(cd infra/federation && terragrunt output -json role_arns | jq -r '.reader')"
+        helm upgrade --install {{.RELEASE}} {{.CHART_DIR}} \
+          --namespace {{.NAMESPACE}} --create-namespace \
+          --set image.repository="$REGISTRY/{{.IMAGE_NAME}}" \
+          --set image.tag="{{.TAG}}" \
+          --set aws.region="$AWS_REGION" \
+          --set aws.queueUrl="$QUEUE_URL" \
+          --set writer.roleArn="$WRITER_ROLE_ARN" \
+          --set reader.roleArn="$READER_ROLE_ARN" \
+          --wait --timeout 5m
+
+  test:
+    desc: Run the Go app tests, then (if a cluster context is set) assert the reader received a writer message
+    cmds:
+      - task: test-app
+      - task: test-assert
+
+  test-app:
+    internal: true
+    dir: app/go
+    cmds: [go test ./...]
+
+  test-assert:
+    desc: Assert the writer SENT and the reader RECEIVED+DELETED a message (requires a deployed release)
+    dotenv: ['.env']
+    cmds:
+      - |
+        echo "Waiting for both Deployments to be available..."
+        kubectl -n {{.NAMESPACE}} rollout status deploy/writer --timeout=120s
+        kubectl -n {{.NAMESPACE}} rollout status deploy/reader --timeout=120s
+        echo "Giving the writer/reader ~30s to exchange a few messages..."
+        sleep 30
+        WLOG="$(kubectl -n {{.NAMESPACE}} logs deploy/writer --tail=50)"
+        RLOG="$(kubectl -n {{.NAMESPACE}} logs deploy/reader --tail=50)"
+        echo "------ writer log ------"; echo "$WLOG"
+        echo "------ reader log ------"; echo "$RLOG"
+        echo "------------------------"
+        echo "$WLOG" | grep -q "SENT body=" \
+          || { echo "ASSERTION FAILED: writer never logged a SENT message (send-only role should work)" >&2; exit 1; }
+        echo "$RLOG" | grep -q "RECEIVED body=" \
+          || { echo "ASSERTION FAILED: reader never logged a RECEIVED message" >&2; exit 1; }
+        echo "$RLOG" | grep -q "DELETED messageId=" \
+          || { echo "ASSERTION FAILED: reader never logged a DELETED message" >&2; exit 1; }
+        echo "OK: writer sent and reader received+deleted — keyless cross-cloud SQS access verified"
+
+  all:
+    desc: After `up` + push, chain creds -> deploy -> test-assert
+    cmds:
+      - task: creds
+      - task: deploy
+      - task: test-assert
+
+  down:
+    desc: Destroy everything (uninstall the Helm release first, then destroy infra)
+    dotenv: ['.env']
+    cmds:
+      - helm uninstall {{.RELEASE}} --namespace {{.NAMESPACE}} --ignore-not-found --wait || true
+      - cd infra && terragrunt run --all destroy --non-interactive

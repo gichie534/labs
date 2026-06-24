@@ -34,6 +34,9 @@ includes:
   eks-cni:
     taskfile: aws/eks-vpc-cni-ip-allocation/Taskfile.yml
     dir: aws/eks-vpc-cni-ip-allocation
+  gke-sqs:
+    taskfile: aws-gcp/gke-sqs-federation/Taskfile.yml
+    dir: aws-gcp/gke-sqs-federation
 
 tasks:
   default:
