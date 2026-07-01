@@ -1,0 +1,103 @@
+version: '3'
+
+# Lifecycle for the aws/ec2-instance-profile lab — a minimal reference for wiring IAM to EC2.
+#
+# It stands up an EC2 instance whose instance profile grants exactly two things: SSM Session Manager
+# access (reach the box, no SSH) and s3:ListAllMyBuckets (what `aws s3 ls` needs). At boot the
+# instance runs `aws s3 ls` using only the role's IMDS-vended credentials and logs the result,
+# proving the instance profile works.
+#
+# Only `up` creates cloud resources. fmt/validate/plan are cost-free.
+#
+# Env (see README / .env.example):
+#   AWS_REGION, TF_STATE_BUCKET   — required for real applies
+
+vars:
+  INSTANCE_NAME: ec2-instance-profile-lab
+  REGION: '{{.AWS_REGION | default "us-east-1"}}'
+
+tasks:
+  default:
+    cmds: [task --list]
+    silent: true
+
+  init-env:
+    desc: Create a local .env from the template (no-op if .env already exists, so it never clobbers your values)
+    cmds:
+      - |
+        if [ -f .env ]; then
+          echo ".env already exists — leaving it untouched."
+        else
+          cp .env.example .env
+          echo "Created .env from .env.example — fill in your values."
+        fi
+
+  fmt:
+    desc: Format Terragrunt HCL
+    cmds:
+      - terragrunt hcl format
+
+  validate:
+    desc: Validate every infra unit (cost-free)
+    dir: infra
+    dotenv: ['../.env']
+    cmds: [terragrunt run --all validate]
+
+  lint:
+    desc: Lint Terraform/Terragrunt
+    cmds:
+      - tflint --recursive
+
+  plan:
+    desc: Plan all infra units (cost-free)
+    dir: infra
+    dotenv: ['../.env']
+    cmds: [terragrunt run --all plan]
+
+  state-bootstrap:
+    desc: 'Create the S3 state bucket (run once; needs TF_STATE_BUCKET + admin creds)'
+    dir: infra
+    dotenv: ['../.env']
+    cmds:
+      - terragrunt backend bootstrap --all --non-interactive
+
+  up:
+    desc: 'Provision the IAM role/profile + EC2 instance (creates cloud resources)'
+    dir: infra
+    dotenv: ['../.env']
+    cmds: [terragrunt run --all apply --non-interactive]
+
+  session:
+    desc: 'Open an SSM Session Manager shell on the instance (needs the AWS CLI Session Manager plugin)'
+    dir: infra/instance
+    dotenv: ['../../.env']
+    cmds:
+      - |
+        ID="$(terragrunt output -raw id)"
+        echo "Starting SSM session on $ID ..."
+        aws ssm start-session --target "$ID" --region {{.REGION}}
+
+  show-proof:
+    desc: 'Print the boot-time `aws s3 ls` demo log from the instance via SSM (proves the profile works)'
+    dir: infra/instance
+    dotenv: ['../../.env']
+    cmds:
+      - |
+        set -euo pipefail
+        ID="$(terragrunt output -raw id)"
+        echo "Reading /var/log/s3-ls-demo.log from $ID via SSM ..."
+        CMD_ID="$(aws ssm send-command --region {{.REGION}} \
+          --instance-ids "$ID" \
+          --document-name "AWS-RunShellScript" \
+          --parameters 'commands=["cat /var/log/s3-ls-demo.log"]' \
+          --query 'Command.CommandId' --output text)"
+        aws ssm wait command-executed --region {{.REGION}} --command-id "$CMD_ID" --instance-id "$ID" || true
+        aws ssm get-command-invocation --region {{.REGION}} \
+          --command-id "$CMD_ID" --instance-id "$ID" \
+          --query 'StandardOutputContent' --output text
+
+  down:
+    desc: Destroy all infra
+    dir: infra
+    dotenv: ['../.env']
+    cmds: [terragrunt run --all destroy --non-interactive]
