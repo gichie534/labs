@@ -1,0 +1,30 @@
+# Image is overridden by CI: `helm upgrade --install --set image.repository=... --set image.tag=...`
+image:
+  repository: REPLACE_WITH_REGISTRY_URL/hello
+  tag: latest
+  pullPolicy: IfNotPresent
+
+replicaCount: 2
+
+# Public hostname the app is served on. Overridden at deploy time:
+#   --set domain=gke-iap.gcp.example.com
+# The ManagedCertificate is provisioned for this exact host and the Ingress routes it.
+domain: REPLACE_WITH_INGRESS_DOMAIN
+
+# ClusterIP + NEG: GKE Ingress on a VPC-native cluster uses container-native load balancing
+# (Network Endpoint Groups) to route straight to Pods. Autopilot is VPC-native, so this is the
+# production default. The Service is the Ingress backend; it is NOT internet-facing itself. A
+# BackendConfig (templates/backendconfig.yaml) enables IAP on this backend, so reaching the app
+# requires a Google identity granted roles/iap.httpsResourceAccessor.
+service:
+  port: 80
+  targetPort: 8080
+
+# Autopilot requires explicit resource requests; these are modest defaults.
+resources:
+  requests:
+    cpu: 250m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 256Mi

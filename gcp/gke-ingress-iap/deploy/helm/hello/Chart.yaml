@@ -1,0 +1,6 @@
+apiVersion: v2
+name: hello
+description: Minimal Go "hello world" HTTP server behind a public HTTPS GKE Ingress (ManagedCertificate) protected by IAP.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

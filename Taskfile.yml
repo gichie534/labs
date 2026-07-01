@@ -25,6 +25,9 @@ includes:
   gke-ingress:
     taskfile: gcp/gke-ingress-managed-cert/Taskfile.yml
     dir: gcp/gke-ingress-managed-cert
+  gke-iap:
+    taskfile: gcp/gke-ingress-iap/Taskfile.yml
+    dir: gcp/gke-ingress-iap
   gke-wi:
     taskfile: gcp/gke-workload-identity/Taskfile.yml
     dir: gcp/gke-workload-identity

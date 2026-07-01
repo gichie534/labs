@@ -1,0 +1,131 @@
+# Build the Go "hello world" image, push it to Artifact Registry, deploy it to the GKE Autopilot
+# cluster with Helm (classic Ingress + Google-managed TLS cert + IAP), and check that IAP is
+# enforcing on the public HTTPS endpoint — all keyless via Workload Identity Federation (no SA key).
+#
+# Required repository variables (Settings > Secrets and variables > Actions > Variables):
+#   GCP_PROJECT       e.g. my-project
+#   GCP_REGION        e.g. us-central1
+#   GKE_CLUSTER       gke-ingress-iap
+#   ARTIFACT_REPO     gke-ingress-iap
+#   INGRESS_DOMAIN    the public hostname, e.g. gke-iap.gcp.example.com
+#   WIF_PROVIDER      full provider resource name from `task gke-iap:ci-config`
+#                     (projects/<num>/locations/global/workloadIdentityPools/github-ci/providers/github)
+#
+# Auth is DIRECT Workload Identity Federation — CI acts as the federated principal itself, with no
+# service account to impersonate and no JSON key.
+#
+# SCOPE: this workflow is the steady-state APP loop. It assumes the infrastructure, the public DNS
+# A record, and the IAP access grants were stood up once by the operator via the Taskfile
+# (`task gke-iap:up` then `task gke-iap:all`). The Ingress and its ephemeral LB IP persist across
+# these helm upgrades, so the A record and managed certificate stay valid; CI just ships new image
+# versions and re-checks that IAP is enforcing.
+#
+# CI runs only the NEGATIVE IAP test (an unauthenticated request must be blocked) — it needs no
+# credentials and stays minimal-privilege (artifactregistry.writer + container.developer). The
+# POSITIVE service-account-JWT test is operator-run via `task gke-iap:verify-positive`, because it
+# requires impersonating the test service account, which is deliberately NOT granted to CI.
+#
+# This workflow lives inside the lab folder. To run it from the repo root, move/symlink it to the
+# repository's top-level .github/workflows/ or trigger it manually.
+
+name: deploy-gke-ingress-iap
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "gcp/gke-ingress-iap/app/go/**"
+      - "gcp/gke-ingress-iap/deploy/helm/**"
+      - "gcp/gke-ingress-iap/.github/workflows/deploy.yml"
+
+permissions:
+  contents: read
+  id-token: write # required for GitHub to mint the OIDC token used by WIF
+
+env:
+  APP_DIR: gcp/gke-ingress-iap/app/go
+  CHART_DIR: gcp/gke-ingress-iap/deploy/helm/hello
+  IMAGE_NAME: hello
+  RELEASE: hello
+  NAMESPACE: hello
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Authenticate to Google Cloud (keyless, direct WIF)
+        id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          project_id: ${{ vars.GCP_PROJECT }}
+          workload_identity_provider: ${{ vars.WIF_PROVIDER }}
+
+      - name: Set up gcloud
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure Docker for Artifact Registry
+        run: gcloud auth configure-docker ${{ vars.GCP_REGION }}-docker.pkg.dev --quiet
+
+      - name: Build and push image
+        env:
+          REGISTRY: ${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT }}/${{ vars.ARTIFACT_REPO }}
+        run: |
+          IMAGE="$REGISTRY/$IMAGE_NAME:${GITHUB_SHA::12}"
+          echo "IMAGE=$IMAGE" >> "$GITHUB_ENV"
+          docker build -t "$IMAGE" "$APP_DIR"
+          docker push "$IMAGE"
+
+      - name: Get cluster credentials
+        uses: google-github-actions/get-gke-credentials@v2
+        with:
+          cluster_name: ${{ vars.GKE_CLUSTER }}
+          location: ${{ vars.GCP_REGION }}
+
+      - name: Deploy with Helm
+        env:
+          REGISTRY: ${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT }}/${{ vars.ARTIFACT_REPO }}
+        run: |
+          helm upgrade --install "$RELEASE" "$CHART_DIR" \
+            --namespace "$NAMESPACE" --create-namespace \
+            --set image.repository="$REGISTRY/$IMAGE_NAME" \
+            --set image.tag="${GITHUB_SHA::12}" \
+            --set domain="${{ vars.INGRESS_DOMAIN }}" \
+            --atomic \
+            --wait --timeout 10m
+
+      - name: Verify IAP is enforcing (negative test)
+        env:
+          INGRESS_DOMAIN: ${{ vars.INGRESS_DOMAIN }}
+        run: |
+          URL="https://$INGRESS_DOMAIN/"
+          echo "Negative test: GET $URL with no credentials (expecting an IAP auth redirect)..."
+          for i in $(seq 1 30); do
+            OUT=$(curl -sS -o /dev/null -D - --max-time 10 "$URL" 2>/dev/null || true)
+            CODE=$(printf '%s' "$OUT" | awk 'NR==1{print $2}')
+            LOC=$(printf '%s' "$OUT" | tr -d '\r' | awk -F': ' 'tolower($1)=="location"{print $2}')
+            if [ -n "$CODE" ]; then
+              echo "  HTTP $CODE; Location: ${LOC:-<none>}"
+              case "$LOC" in
+                *accounts.google.com*)
+                  echo "OK: IAP redirected the unauthenticated request to Google sign-in — gate enforced."
+                  exit 0;;
+              esac
+              case "$CODE" in
+                401|403)
+                  echo "OK: IAP rejected the unauthenticated request (HTTP $CODE) — gate enforced."
+                  exit 0;;
+                200)
+                  echo "FAILED: app served an UNAUTHENTICATED request (HTTP 200) — IAP is NOT enforcing!" >&2
+                  exit 1;;
+              esac
+            fi
+            echo "  endpoint not ready yet (attempt $i); retrying..."
+            sleep 10
+          done
+          echo "FAILED: no conclusive response from $URL." >&2
+          echo "If this is a brand-new environment, ensure the operator ran 'task gke-iap:dns' to" >&2
+          echo "publish the A record and that the managed certificate has gone Active." >&2
+          exit 1
