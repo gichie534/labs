@@ -63,7 +63,8 @@ deploy/                     # only if the app runs on k8s (manifests / Argo CD A
 - Add `Taskfile.yml` per the `taskfile-conventions` steering (standard interface).
 - Register the lab in the root `Taskfile.yml` `includes:` with a short namespace.
 - Load the lab's runtime inputs from a `.env` file (committed `.env.example` template, gitignored
-  `.env`) via per-task `dotenv:` — see the dotenv section in `taskfile-conventions`.
+  `.env`) via per-task `dotenv:` — see the dotenv section in `taskfile-conventions`. Include an
+  `init-env` task that seeds `.env` from `.env.example` (no-op if `.env` exists).
 
 ## 6. Documentation
 

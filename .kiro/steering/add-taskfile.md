@@ -13,13 +13,14 @@ Follow the `taskfile-conventions` steering for the standard interface.
    Inspect its `infra/`, and whether it has an `app/` and/or `deploy/` — this decides whether
    `build` and `deploy` tasks are needed.
 2. **Create `<lab>/Taskfile.yml`** with the standard interface
-   (`default, fmt, validate, lint, plan, up, build, deploy, test, down`), omitting `build`/`deploy`
-   if the lab has no app.
+   (`default, init-env, fmt, validate, lint, plan, up, build, deploy, test, down`), omitting
+   `build`/`deploy` if the lab has no app.
    - Point infra tasks at `dir: infra`.
    - Add `vars:` for region, image name, cluster name as needed.
    - Wire `deps:` where one task requires another (e.g. `deploy` deps on `build`).
    - Load runtime inputs from a `.env` file via per-task `dotenv:` (committed `.env.example`,
-     gitignored `.env`); mind the `dir: infra` → `['../.env']` path rule. See the dotenv section in
+     gitignored `.env`); mind the `dir: infra` → `['../.env']` path rule. Include an `init-env` task
+     that seeds `.env` from `.env.example` (no-op if `.env` exists). See the dotenv section in
      `taskfile-conventions`.
 3. **Pin tools** — if missing, add `.terraform-version` and `.terragrunt-version` to the lab (read
    by tenv — a single version string each).

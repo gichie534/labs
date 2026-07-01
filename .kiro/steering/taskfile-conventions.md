@@ -15,6 +15,8 @@ Implement these task names where applicable; keep the names identical across lab
 bodies differ. A lab without an app omits `build` and `deploy`.
 
 - `default` — list tasks (`task --list`); set as the default, `silent: true`.
+- `init-env` — create a local `.env` from `.env.example` (no-op if `.env` already exists, so it
+  never clobbers existing values). Every lab that loads runtime inputs via dotenv includes this.
 - `fmt` — `terragrunt hclfmt` plus language formatters.
 - `validate` — `terragrunt run-all validate`.
 - `lint` — tflint / tfsec or checkov / app linters.
@@ -55,6 +57,17 @@ Two non-obvious constraints (Task behavior — both matter):
 
 ```yaml
 tasks:
+  init-env: # local-only, no dotenv (it creates the .env)
+    desc: Create a local .env from the template (no-op if .env already exists)
+    cmds:
+      - |
+        if [ -f .env ]; then
+          echo ".env already exists — leaving it untouched."
+        else
+          cp .env.example .env
+          echo "Created .env from .env.example — fill in your values."
+        fi
+
   up: # runs in infra/ -> ../.env
     dir: infra
     dotenv: ['../.env']
@@ -65,7 +78,7 @@ tasks:
     cmds: [helm upgrade --install ...]
 ```
 
-Document the `cp .env.example .env` step in the lab's README.
+Document the `task <ns>:init-env` step (then edit `.env`) in the lab's README.
 
 ## Example — lab with a Go app on EKS
 
@@ -79,6 +92,17 @@ tasks:
   default:
     cmds: [task --list]
     silent: true
+
+  init-env:
+    desc: Create a local .env from the template (no-op if .env already exists)
+    cmds:
+      - |
+        if [ -f .env ]; then
+          echo ".env already exists — leaving it untouched."
+        else
+          cp .env.example .env
+          echo "Created .env from .env.example — fill in your values."
+        fi
 
   fmt:
     cmds:
