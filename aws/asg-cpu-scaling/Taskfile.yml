@@ -1,0 +1,152 @@
+version: '3'
+
+# Lifecycle for the aws/asg-cpu-scaling lab — demonstrates EC2 Auto Scaling driven by CPU.
+#
+# It stands up an Auto Scaling group (min 1 / max 3) with a target-tracking policy on fleet-average
+# CPU (target 30%). `load` pushes a synthetic CPU burn onto every running instance over SSM, which
+# drives the average past the target so the group scales OUT; `unload` stops the burn so the average
+# falls and the group scales IN. `watch` shows capacity + instance CPU changing in real time.
+#
+# Only `up` creates cloud resources. fmt/validate/plan are cost-free.
+#
+# Env (see README / .env.example):
+#   AWS_REGION, TF_STATE_BUCKET   — required for real applies
+
+vars:
+  REGION: '{{.AWS_REGION | default "us-east-1"}}'
+  # Duration (seconds) of the stress-ng burn kicked off by `load`.
+  LOAD_SECONDS: '{{.LOAD_SECONDS | default "600"}}'
+
+tasks:
+  default:
+    cmds: [task --list]
+    silent: true
+
+  init-env:
+    desc: Create a local .env from the template (no-op if .env already exists, so it never clobbers your values)
+    cmds:
+      - |
+        if [ -f .env ]; then
+          echo ".env already exists — leaving it untouched."
+        else
+          cp .env.example .env
+          echo "Created .env from .env.example — fill in your values."
+        fi
+
+  fmt:
+    desc: Format Terragrunt HCL
+    cmds:
+      - terragrunt hcl format
+
+  validate:
+    desc: Validate every infra unit (cost-free)
+    dir: infra
+    dotenv: ['../.env']
+    cmds: [terragrunt run --all validate]
+
+  lint:
+    desc: Lint Terraform/Terragrunt
+    cmds:
+      - tflint --recursive
+
+  plan:
+    desc: Plan all infra units (cost-free)
+    dir: infra
+    dotenv: ['../.env']
+    cmds: [terragrunt run --all plan]
+
+  state-bootstrap:
+    desc: 'Create the S3 state bucket (run once; needs TF_STATE_BUCKET + admin creds)'
+    dir: infra
+    dotenv: ['../.env']
+    cmds:
+      - terragrunt backend bootstrap --all --non-interactive
+
+  up:
+    desc: 'Provision the IAM role/profile + Auto Scaling group (creates cloud resources)'
+    dir: infra
+    dotenv: ['../.env']
+    cmds: [terragrunt run --all apply --non-interactive]
+
+  instances:
+    desc: 'List the running instances in the ASG (id, AZ, state, health)'
+    dir: infra/asg
+    dotenv: ['../../.env']
+    cmds:
+      - |
+        set -euo pipefail
+        ASG="$(terragrunt output -raw autoscaling_group_name)"
+        aws autoscaling describe-auto-scaling-groups --region {{.REGION}} \
+          --auto-scaling-group-names "$ASG" \
+          --query 'AutoScalingGroups[0].Instances[].{Id:InstanceId,AZ:AvailabilityZone,Lifecycle:LifecycleState,Health:HealthStatus}' \
+          --output table
+
+  load:
+    desc: 'Scale OUT: burn CPU on every running instance via SSM (stress-ng, all cores) to push average CPU past target'
+    dir: infra/asg
+    dotenv: ['../../.env']
+    cmds:
+      - |
+        set -euo pipefail
+        ASG="$(terragrunt output -raw autoscaling_group_name)"
+        IDS="$(aws autoscaling describe-auto-scaling-groups --region {{.REGION}} \
+          --auto-scaling-group-names "$ASG" \
+          --query 'AutoScalingGroups[0].Instances[?LifecycleState==`InService`].InstanceId' \
+          --output text)"
+        if [ -z "$IDS" ]; then echo "No InService instances found in $ASG."; exit 1; fi
+        echo "Loading CPU on: $IDS (for {{.LOAD_SECONDS}}s)"
+        aws ssm send-command --region {{.REGION}} \
+          --document-name "AWS-RunShellScript" \
+          --instance-ids $IDS \
+          --comment "asg-cpu-scaling: burn CPU to trigger scale-out" \
+          --parameters 'commands=["nohup stress-ng --cpu 0 --timeout {{.LOAD_SECONDS}}s >/var/log/stress-ng.log 2>&1 &"]' \
+          --query 'Command.CommandId' --output text
+        echo "Load started. Watch capacity grow with: task asg:watch"
+
+  unload:
+    desc: 'Scale IN: stop the CPU burn on every running instance via SSM so average CPU falls back below target'
+    dir: infra/asg
+    dotenv: ['../../.env']
+    cmds:
+      - |
+        set -euo pipefail
+        ASG="$(terragrunt output -raw autoscaling_group_name)"
+        IDS="$(aws autoscaling describe-auto-scaling-groups --region {{.REGION}} \
+          --auto-scaling-group-names "$ASG" \
+          --query 'AutoScalingGroups[0].Instances[?LifecycleState==`InService`].InstanceId' \
+          --output text)"
+        if [ -z "$IDS" ]; then echo "No InService instances found in $ASG."; exit 0; fi
+        echo "Releasing CPU load on: $IDS"
+        aws ssm send-command --region {{.REGION}} \
+          --document-name "AWS-RunShellScript" \
+          --instance-ids $IDS \
+          --comment "asg-cpu-scaling: stop CPU burn to trigger scale-in" \
+          --parameters 'commands=["pkill -f stress-ng || true"]' \
+          --query 'Command.CommandId' --output text
+        echo "Load released. Scale-in follows once the average CPU stays below target (a few minutes)."
+
+  watch:
+    desc: 'Watch desired/in-service capacity change over time (Ctrl-C to stop)'
+    dir: infra/asg
+    dotenv: ['../../.env']
+    cmds:
+      - |
+        set -euo pipefail
+        ASG="$(terragrunt output -raw autoscaling_group_name)"
+        echo "Watching $ASG — Ctrl-C to stop."
+        while true; do
+          DESIRED="$(aws autoscaling describe-auto-scaling-groups --region {{.REGION}} \
+            --auto-scaling-group-names "$ASG" \
+            --query 'AutoScalingGroups[0].DesiredCapacity' --output text)"
+          INSERVICE="$(aws autoscaling describe-auto-scaling-groups --region {{.REGION}} \
+            --auto-scaling-group-names "$ASG" \
+            --query 'length(AutoScalingGroups[0].Instances[?LifecycleState==`InService`])' --output text)"
+          echo "$(date -u +%H:%M:%S)  desired=$DESIRED  in_service=$INSERVICE"
+          sleep 15
+        done
+
+  down:
+    desc: Destroy all infra
+    dir: infra
+    dotenv: ['../.env']
+    cmds: [terragrunt run --all destroy --non-interactive]
