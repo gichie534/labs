@@ -1,0 +1,137 @@
+version: '3'
+
+# Lifecycle for the aws/ec2-abac-s3 lab — demonstrating ABAC on top of RBAC for S3.
+#
+# Two EC2 instances get the SAME RBAC identity policy (s3:ListBucket + s3:GetObject on the demo
+# bucket). The demo bucket's policy adds an ABAC gate: it denies those actions unless the caller's
+# aws:PrincipalTag/project == "abac-lab". Only the "allowed" role carries that tag, so only that
+# instance can read the bucket — proving why ABAC adds security beyond RBAC.
+#
+# Only `up` creates cloud resources. fmt/validate/plan are cost-free.
+#
+# Env (see README / .env.example):
+#   AWS_REGION, TF_STATE_BUCKET, ABAC_BUCKET   — required for real applies
+
+vars:
+  REGION: '{{.AWS_REGION | default "us-east-1"}}'
+
+tasks:
+  default:
+    cmds: [task --list]
+    silent: true
+
+  init-env:
+    desc: Create a local .env from the template (no-op if .env already exists, so it never clobbers your values)
+    cmds:
+      - |
+        if [ -f .env ]; then
+          echo ".env already exists — leaving it untouched."
+        else
+          cp .env.example .env
+          echo "Created .env from .env.example — fill in your values."
+        fi
+
+  fmt:
+    desc: Format Terragrunt HCL
+    cmds:
+      - terragrunt hcl format
+
+  validate:
+    desc: Validate every infra unit (cost-free)
+    dir: infra
+    dotenv: ['../.env']
+    cmds: [terragrunt run --all validate]
+
+  lint:
+    desc: Lint Terraform/Terragrunt
+    cmds:
+      - tflint --recursive
+
+  plan:
+    desc: Plan all infra units (cost-free)
+    dir: infra
+    dotenv: ['../.env']
+    cmds: [terragrunt run --all plan]
+
+  state-bootstrap:
+    desc: 'Create the S3 state bucket (run once; needs TF_STATE_BUCKET + admin creds)'
+    dir: infra
+    dotenv: ['../.env']
+    cmds:
+      - terragrunt backend bootstrap --all --non-interactive
+
+  up:
+    desc: 'Provision IAM roles/profiles, the demo bucket + ABAC policy, and both EC2 instances (creates cloud resources)'
+    dir: infra
+    dotenv: ['../.env']
+    cmds: [terragrunt run --all apply --non-interactive]
+
+  verify:
+    desc: 'Prove ABAC: run the same S3 read on BOTH instances over SSM; allowed must succeed, denied must get AccessDenied'
+    dir: infra
+    dotenv: ['../.env']
+    cmds:
+      - |
+        set -euo pipefail
+        BUCKET="${ABAC_BUCKET:?set ABAC_BUCKET in .env}"
+        ALLOWED_ID="$(terragrunt output -raw --working-dir instance-allowed id)"
+        DENIED_ID="$(terragrunt output -raw --working-dir instance-denied id)"
+
+        run_probe() {
+          local id="$1"
+          local cmd_id
+          cmd_id="$(aws ssm send-command --region {{.REGION}} \
+            --instance-ids "$id" \
+            --document-name "AWS-RunShellScript" \
+            --parameters "commands=[\"aws s3 cp s3://$BUCKET/probe.txt - 2>&1; echo exit_code=\$?\"]" \
+            --query 'Command.CommandId' --output text)"
+          aws ssm wait command-executed --region {{.REGION}} --command-id "$cmd_id" --instance-id "$id" || true
+          aws ssm get-command-invocation --region {{.REGION}} \
+            --command-id "$cmd_id" --instance-id "$id" \
+            --query 'StandardOutputContent' --output text
+        }
+
+        echo "== ALLOWED instance ($ALLOWED_ID) — expect the object contents =="
+        ALLOWED_OUT="$(run_probe "$ALLOWED_ID")"
+        echo "$ALLOWED_OUT"
+
+        echo "== DENIED instance ($DENIED_ID) — expect AccessDenied =="
+        DENIED_OUT="$(run_probe "$DENIED_ID")"
+        echo "$DENIED_OUT"
+
+        echo
+        echo "== ABAC assertion =="
+        if echo "$ALLOWED_OUT" | grep -q "exit_code=0" && echo "$DENIED_OUT" | grep -qi "AccessDenied"; then
+          echo "PASS: allowed instance read the object; denied instance got AccessDenied — ABAC works."
+        else
+          echo "FAIL: unexpected result (allowed should succeed, denied should be AccessDenied)."
+          exit 1
+        fi
+
+  show-proof:
+    desc: 'Print the boot-time ABAC probe log (/var/log/abac-demo.log) from both instances via SSM'
+    dir: infra
+    dotenv: ['../.env']
+    cmds:
+      - |
+        set -euo pipefail
+        for unit in instance-allowed instance-denied; do
+          ID="$(terragrunt output -raw --working-dir "$unit" id)"
+          echo "===== $unit ($ID): /var/log/abac-demo.log ====="
+          CMD_ID="$(aws ssm send-command --region {{.REGION}} \
+            --instance-ids "$ID" \
+            --document-name "AWS-RunShellScript" \
+            --parameters 'commands=["cat /var/log/abac-demo.log"]' \
+            --query 'Command.CommandId' --output text)"
+          aws ssm wait command-executed --region {{.REGION}} --command-id "$CMD_ID" --instance-id "$ID" || true
+          aws ssm get-command-invocation --region {{.REGION}} \
+            --command-id "$CMD_ID" --instance-id "$ID" \
+            --query 'StandardOutputContent' --output text
+          echo
+        done
+
+  down:
+    desc: Destroy all infra
+    dir: infra
+    dotenv: ['../.env']
+    cmds: [terragrunt run --all destroy --non-interactive]

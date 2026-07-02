@@ -40,6 +40,9 @@ includes:
   ec2-profile:
     taskfile: aws/ec2-instance-profile/Taskfile.yml
     dir: aws/ec2-instance-profile
+  ec2-abac:
+    taskfile: aws/ec2-abac-s3/Taskfile.yml
+    dir: aws/ec2-abac-s3
   gke-sqs:
     taskfile: aws-gcp/gke-sqs-federation/Taskfile.yml
     dir: aws-gcp/gke-sqs-federation
