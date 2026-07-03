@@ -1,0 +1,161 @@
+version: '3'
+
+# Lifecycle for the aws/s3-policy-eval-matrix lab — how an IAM identity policy and an S3 bucket
+# (resource) policy COMBINE to decide access, in a single account.
+#
+# Four EC2 instances, one per cell of the 2x2 matrix (identity Allow? x bucket Allow/Deny/silent):
+#   identity-only  identity=Allow,  bucket=silent        -> SUCCESS (either side allowing is enough)
+#   bucket-only    identity=silent, bucket=Allow         -> SUCCESS (resource-side Allow alone)
+#   explicit-deny  identity=Allow,  bucket=explicit Deny -> AccessDenied (explicit Deny always wins)
+#   neither        identity=silent, bucket=silent        -> AccessDenied (implicit deny)
+#
+# Only `up` creates cloud resources. fmt/validate/plan are cost-free.
+#
+# Env (see README / .env.example):
+#   AWS_REGION, TF_STATE_BUCKET, DEMO_BUCKET   — required for real applies
+
+vars:
+  REGION: '{{.AWS_REGION | default "us-east-1"}}'
+
+tasks:
+  default:
+    cmds: [task --list]
+    silent: true
+
+  init-env:
+    desc: Create a local .env from the template (no-op if .env already exists, so it never clobbers your values)
+    cmds:
+      - |
+        if [ -f .env ]; then
+          echo ".env already exists — leaving it untouched."
+        else
+          cp .env.example .env
+          echo "Created .env from .env.example — fill in your values."
+        fi
+
+  fmt:
+    desc: Format Terragrunt HCL
+    cmds:
+      - terragrunt hcl format
+
+  validate:
+    desc: Validate every infra unit (cost-free)
+    dir: infra
+    dotenv: ['../.env']
+    cmds: [terragrunt run --all validate]
+
+  lint:
+    desc: Lint Terraform/Terragrunt
+    cmds:
+      - tflint --recursive
+
+  plan:
+    desc: Plan all infra units (cost-free)
+    dir: infra
+    dotenv: ['../.env']
+    cmds: [terragrunt run --all plan]
+
+  state-bootstrap:
+    desc: 'Create the S3 state bucket (run once; needs TF_STATE_BUCKET + admin creds)'
+    dir: infra
+    dotenv: ['../.env']
+    cmds:
+      - terragrunt backend bootstrap --all --non-interactive
+
+  up:
+    desc: 'Provision the four IAM roles/profiles, the demo bucket + matrix policy, the probe object, and all four EC2 instances (creates cloud resources)'
+    dir: infra
+    dotenv: ['../.env']
+    cmds: [terragrunt run --all apply --non-interactive]
+
+  verify:
+    desc: 'Prove the matrix: run the same S3 read on all four instances over SSM and assert the expected Allow/Deny per cell'
+    dir: infra
+    dotenv: ['../.env']
+    cmds:
+      - |
+        set -euo pipefail
+        BUCKET="${DEMO_BUCKET:?set DEMO_BUCKET in .env}"
+
+        # unit -> "expect" where expect is "allow" or "deny".
+        run_probe() {
+          local id="$1"
+          local cmd_id
+          cmd_id="$(aws ssm send-command --region {{.REGION}} \
+            --instance-ids "$id" \
+            --document-name "AWS-RunShellScript" \
+            --parameters "commands=[\"aws s3 cp s3://$BUCKET/probe.txt - 2>&1; echo exit_code=\$?\"]" \
+            --query 'Command.CommandId' --output text)"
+          aws ssm wait command-executed --region {{.REGION}} --command-id "$cmd_id" --instance-id "$id" || true
+          aws ssm get-command-invocation --region {{.REGION}} \
+            --command-id "$cmd_id" --instance-id "$id" \
+            --query 'StandardOutputContent' --output text
+        }
+
+        FAIL=0
+        for pair in \
+          "instance-identity-only:allow" \
+          "instance-bucket-only:allow" \
+          "instance-explicit-deny:deny" \
+          "instance-neither:deny"; do
+          unit="${pair%%:*}"
+          expect="${pair##*:}"
+          id="$(terragrunt output -raw --working-dir "$unit" id)"
+          echo "== $unit ($id) — expect ${expect} =="
+          out="$(run_probe "$id")"
+          echo "$out"
+          if [ "$expect" = "allow" ]; then
+            if echo "$out" | grep -q "exit_code=0"; then
+              echo "  PASS: read succeeded."
+            else
+              echo "  FAIL: expected success but the read did not succeed."; FAIL=1
+            fi
+          else
+            # A same-account bucket-policy Deny surfaces on the HeadObject that `aws s3 cp` issues
+            # first as a bodyless "403 Forbidden"; a plain missing permission surfaces as
+            # "AccessDenied". Both are denials — the object must NOT have been read (exit_code!=0),
+            # and the failure must be a permissions error (Forbidden/AccessDenied), not e.g. network.
+            if ! echo "$out" | grep -q "exit_code=0" && echo "$out" | grep -Eqi "AccessDenied|Forbidden|403"; then
+              echo "  PASS: read denied (AccessDenied/Forbidden)."
+            else
+              echo "  FAIL: expected a permissions denial but the read was not denied."; FAIL=1
+            fi
+          fi
+          echo
+        done
+
+        echo "== matrix assertion =="
+        if [ "$FAIL" -eq 0 ]; then
+          echo "PASS: all four cells behaved as expected — IAM identity + bucket policy combine as documented."
+        else
+          echo "FAIL: at least one cell did not match its expected result."
+          exit 1
+        fi
+
+  show-proof:
+    desc: 'Print the boot-time probe log (/var/log/s3-eval-demo.log) from all four instances via SSM'
+    dir: infra
+    dotenv: ['../.env']
+    cmds:
+      - |
+        set -euo pipefail
+        for unit in instance-identity-only instance-bucket-only instance-explicit-deny instance-neither; do
+          ID="$(terragrunt output -raw --working-dir "$unit" id)"
+          echo "===== $unit ($ID): /var/log/s3-eval-demo.log ====="
+          CMD_ID="$(aws ssm send-command --region {{.REGION}} \
+            --instance-ids "$ID" \
+            --document-name "AWS-RunShellScript" \
+            --parameters 'commands=["cat /var/log/s3-eval-demo.log"]' \
+            --query 'Command.CommandId' --output text)"
+          aws ssm wait command-executed --region {{.REGION}} --command-id "$CMD_ID" --instance-id "$ID" || true
+          aws ssm get-command-invocation --region {{.REGION}} \
+            --command-id "$CMD_ID" --instance-id "$ID" \
+            --query 'StandardOutputContent' --output text
+          echo
+        done
+
+  down:
+    desc: Destroy all infra
+    dir: infra
+    dotenv: ['../.env']
+    cmds: [terragrunt run --all destroy --non-interactive]
