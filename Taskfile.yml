@@ -46,6 +46,9 @@ includes:
   asg:
     taskfile: aws/asg-cpu-scaling/Taskfile.yml
     dir: aws/asg-cpu-scaling
+  alb:
+    taskfile: aws/alb-routing/Taskfile.yml
+    dir: aws/alb-routing
   gke-sqs:
     taskfile: aws-gcp/gke-sqs-federation/Taskfile.yml
     dir: aws-gcp/gke-sqs-federation

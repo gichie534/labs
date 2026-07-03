@@ -1,0 +1,99 @@
+version: '3'
+
+# Lifecycle for the aws/alb-routing lab — demonstrates ALB path-based and host-based routing.
+#
+# It stands up two EC2 instances (app-a, app-b), each running a tiny web server that reports its own
+# identity, behind one internet-facing ALB. A single HTTP listener routes:
+#   path  /a,/a/* -> app-a   |   /b,/b/* -> app-b
+#   host  a.alb.lab -> app-a |   b.alb.lab -> app-b
+#   no match -> fixed 404
+#
+# Only `up` creates cloud resources. fmt/validate/plan are cost-free.
+#
+# Env (see README / .env.example):
+#   AWS_REGION, TF_STATE_BUCKET   — required for real applies
+
+tasks:
+  default:
+    cmds: [task --list]
+    silent: true
+
+  init-env:
+    desc: Create a local .env from the template (no-op if .env already exists, so it never clobbers your values)
+    cmds:
+      - |
+        if [ -f .env ]; then
+          echo ".env already exists — leaving it untouched."
+        else
+          cp .env.example .env
+          echo "Created .env from .env.example — fill in your values."
+        fi
+
+  fmt:
+    desc: Format Terragrunt HCL
+    cmds:
+      - terragrunt hcl format
+
+  validate:
+    desc: Validate every infra unit (cost-free)
+    dir: infra
+    dotenv: ['../.env']
+    cmds: [terragrunt run --all validate]
+
+  lint:
+    desc: Lint Terraform/Terragrunt
+    cmds:
+      - tflint --recursive
+
+  plan:
+    desc: Plan all infra units (cost-free)
+    dir: infra
+    dotenv: ['../.env']
+    cmds: [terragrunt run --all plan]
+
+  state-bootstrap:
+    desc: 'Create the S3 state bucket (run once; needs TF_STATE_BUCKET + admin creds)'
+    dir: infra
+    dotenv: ['../.env']
+    cmds:
+      - terragrunt backend bootstrap --all --non-interactive
+
+  up:
+    desc: 'Provision the two instances + the ALB and its routing rules (creates cloud resources)'
+    dir: infra
+    dotenv: ['../.env']
+    cmds: [terragrunt run --all apply --non-interactive]
+
+  dns:
+    desc: 'Print the ALB DNS name'
+    dir: infra/alb
+    dotenv: ['../../.env']
+    cmds:
+      - terragrunt output -raw dns_name
+
+  demo:
+    desc: 'Curl the ALB to prove path-based and host-based routing (targets may take ~1-2 min to pass health checks after `up`)'
+    dir: infra/alb
+    dotenv: ['../../.env']
+    cmds:
+      - |
+        set -euo pipefail
+        DNS="$(terragrunt output -raw dns_name)"
+        echo "ALB: $DNS"
+        echo
+        echo "== path-based =="
+        echo "-- GET /a/  (expect app-a) --";      curl -fsS "http://$DNS/a/"  || true; echo
+        echo "-- GET /b/  (expect app-b) --";      curl -fsS "http://$DNS/b/"  || true; echo
+        echo
+        echo "== host-based (same URL, different Host header) =="
+        echo "-- Host: a.alb.lab  (expect app-a) --"; curl -fsS -H "Host: a.alb.lab" "http://$DNS/" || true; echo
+        echo "-- Host: b.alb.lab  (expect app-b) --"; curl -fsS -H "Host: b.alb.lab" "http://$DNS/" || true; echo
+        echo
+        echo "== no matching rule (expect HTTP 404) =="
+        curl -s -o /dev/null -w "HTTP %{http_code}\n" "http://$DNS/nowhere"
+
+  down:
+    desc: Destroy all infra
+    dir: infra
+    dotenv: ['../.env']
+    cmds: [terragrunt run --all destroy --non-interactive]
