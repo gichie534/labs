@@ -1,0 +1,2 @@
+# Lambda build artifacts (produced by `task build`)
+build/

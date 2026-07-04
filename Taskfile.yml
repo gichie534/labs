@@ -55,6 +55,9 @@ includes:
   alb:
     taskfile: aws/alb-routing/Taskfile.yml
     dir: aws/alb-routing
+  lambda-vpc:
+    taskfile: aws/lambda-vpc-private-access/Taskfile.yml
+    dir: aws/lambda-vpc-private-access
   gke-sqs:
     taskfile: aws-gcp/gke-sqs-federation/Taskfile.yml
     dir: aws-gcp/gke-sqs-federation

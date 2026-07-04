@@ -1,0 +1,108 @@
+version: '3'
+
+# Lifecycle for the aws/lambda-vpc-private-access lab — proving a VPC-attached Lambda can reach a
+# private resource.
+#
+# It stands up a dedicated VPC (no NAT), a private EC2 instance running a tiny HTTP server on :8080
+# that returns its own identity, and a Lambda placed in the same private subnets. The Lambda GETs the
+# instance over the VPC's internal network and returns what it read — the proof.
+#
+# Only `up` creates cloud resources. fmt/validate/plan are cost-free (but need the zip built first,
+# so they depend on `build`).
+#
+# Env (see README / .env.example):
+#   AWS_REGION, TF_STATE_BUCKET   — required for real applies
+
+vars:
+  REGION: '{{.AWS_REGION | default "us-east-1"}}'
+  FUNCTION_NAME: lambda-vpc-private-access
+
+tasks:
+  default:
+    cmds: [task --list]
+    silent: true
+
+  init-env:
+    desc: Create a local .env from the template (no-op if .env already exists, so it never clobbers your values)
+    cmds:
+      - |
+        if [ -f .env ]; then
+          echo ".env already exists — leaving it untouched."
+        else
+          cp .env.example .env
+          echo "Created .env from .env.example — fill in your values."
+        fi
+
+  build:
+    desc: 'Compile the Go handler for Lambda (provided.al2023) and zip it to build/function.zip'
+    dir: app/go
+    cmds:
+      - go test ./...
+      - GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -tags lambda.norpc -o ../../build/bootstrap .
+      - cd ../../build && zip -j -q function.zip bootstrap && rm -f bootstrap
+      - echo "Built build/function.zip"
+
+  fmt:
+    desc: Format Terragrunt HCL and Go
+    cmds:
+      - terragrunt hcl format
+      - gofmt -w ./app/go
+
+  validate:
+    desc: Validate every infra unit (cost-free)
+    deps: [build]
+    dir: infra
+    dotenv: ['../.env']
+    cmds: [terragrunt run --all validate]
+
+  lint:
+    desc: Lint Terraform/Terragrunt
+    cmds:
+      - tflint --recursive
+
+  plan:
+    desc: Plan all infra units (cost-free)
+    deps: [build]
+    dir: infra
+    dotenv: ['../.env']
+    cmds: [terragrunt run --all plan]
+
+  state-bootstrap:
+    desc: 'Create the S3 state bucket (run once; needs TF_STATE_BUCKET + admin creds)'
+    dir: infra
+    dotenv: ['../.env']
+    cmds:
+      - terragrunt backend bootstrap --all --non-interactive
+
+  up:
+    desc: 'Provision the VPC, SGs, private EC2, and VPC-attached Lambda (creates cloud resources)'
+    deps: [build]
+    dir: infra
+    dotenv: ['../.env']
+    cmds: [terragrunt run --all apply --non-interactive]
+
+  test:
+    desc: 'Run the Go app unit tests'
+    dir: app/go
+    cmds: [go test ./...]
+
+  invoke:
+    desc: 'Invoke the Lambda and print its JSON response (the proof it reached the private EC2)'
+    dir: infra/lambda
+    dotenv: ['../../.env']
+    cmds:
+      - |
+        set -euo pipefail
+        NAME="$(terragrunt output -raw function_name)"
+        echo "Invoking $NAME ..."
+        aws lambda invoke --region {{.REGION}} \
+          --function-name "$NAME" \
+          --cli-binary-format raw-in-base64-out \
+          --payload '{}' \
+          /dev/stdout | { command -v jq >/dev/null 2>&1 && jq . || cat; }
+
+  down:
+    desc: Destroy all infra
+    dir: infra
+    dotenv: ['../.env']
+    cmds: [terragrunt run --all destroy --non-interactive]
