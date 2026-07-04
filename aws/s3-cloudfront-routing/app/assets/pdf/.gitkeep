@@ -1,0 +1,2 @@
+# Drop your .pdf file(s) here. `task cdn:up` uploads each to the pdf bucket and the generated
+# index.html links to them at /<filename> (CloudFront routes *.pdf to this bucket).

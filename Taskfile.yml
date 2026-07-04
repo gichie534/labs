@@ -46,6 +46,9 @@ includes:
   s3-eval:
     taskfile: aws/s3-policy-eval-matrix/Taskfile.yml
     dir: aws/s3-policy-eval-matrix
+  cdn:
+    taskfile: aws/s3-cloudfront-routing/Taskfile.yml
+    dir: aws/s3-cloudfront-routing
   asg:
     taskfile: aws/asg-cpu-scaling/Taskfile.yml
     dir: aws/asg-cpu-scaling

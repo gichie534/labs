@@ -1,0 +1,111 @@
+version: '3'
+
+# Lifecycle for the aws/s3-cloudfront-routing lab — a CloudFront distribution that routes by path to
+# three PRIVATE S3 buckets (default -> static site, *.jpg -> jpg bucket, *.pdf -> pdf bucket), all
+# reached via Origin Access Control.
+#
+# Only `up` creates cloud resources. fmt/validate/plan are cost-free.
+#
+# Env (see README / .env.example):
+#   AWS_REGION, TF_STATE_BUCKET, BUCKET_PREFIX   — required for real applies
+
+vars:
+  REGION: '{{.AWS_REGION | default "us-east-1"}}'
+
+tasks:
+  default:
+    cmds: [task --list]
+    silent: true
+
+  init-env:
+    desc: Create a local .env from the template (no-op if .env already exists, so it never clobbers your values)
+    cmds:
+      - |
+        if [ -f .env ]; then
+          echo ".env already exists — leaving it untouched."
+        else
+          cp .env.example .env
+          echo "Created .env from .env.example — fill in your values."
+        fi
+
+  fmt:
+    desc: Format Terragrunt HCL
+    cmds:
+      - terragrunt hcl format
+
+  validate:
+    desc: Validate every infra unit (cost-free)
+    dir: infra
+    dotenv: ['../.env']
+    cmds: [terragrunt run --all validate]
+
+  lint:
+    desc: Lint Terraform/Terragrunt
+    cmds:
+      - tflint --recursive
+
+  plan:
+    desc: Plan all infra units (cost-free)
+    dir: infra
+    dotenv: ['../.env']
+    cmds: [terragrunt run --all plan]
+
+  state-bootstrap:
+    desc: 'Create the S3 state bucket (run once; needs TF_STATE_BUCKET + admin creds)'
+    dir: infra
+    dotenv: ['../.env']
+    cmds:
+      - terragrunt backend bootstrap --all --non-interactive
+
+  up:
+    desc: 'Provision the CloudFront distribution, the three private buckets, and upload assets + index.html (creates cloud resources)'
+    dir: infra
+    dotenv: ['../.env']
+    cmds: [terragrunt run --all apply --non-interactive]
+
+  url:
+    desc: 'Print the CloudFront URL to open in a browser'
+    dir: infra
+    dotenv: ['../.env']
+    cmds:
+      - |
+        set -eu
+        echo "https://$(terragrunt output -raw --working-dir cdn domain_name)"
+
+  verify:
+    desc: 'Fetch / , a .jpg, and a .pdf through CloudFront and assert each is served (routing works)'
+    dir: infra
+    dotenv: ['../.env']
+    cmds:
+      - |
+        set -euo pipefail
+        DOMAIN="$(terragrunt output -raw --working-dir cdn domain_name)"
+        BASE="https://$DOMAIN"
+        echo "CloudFront: $BASE"
+
+        # First jpg/pdf asset the seed unit uploaded (empty if you haven't added files yet).
+        JPG="$(terragrunt output -json --working-dir seed jpg_keys | sed -n 's/.*"\([^"]*\)".*/\1/p' | head -1 || true)"
+        PDF="$(terragrunt output -json --working-dir seed pdf_keys | sed -n 's/.*"\([^"]*\)".*/\1/p' | head -1 || true)"
+
+        check() { # url expected-substring-in-content-type
+          local url="$1" ; local want="$2"
+          echo "== GET $url =="
+          code="$(curl -s -o /dev/null -w '%{http_code}' -L "$url")"
+          ctype="$(curl -s -o /dev/null -w '%{content_type}' -L "$url")"
+          echo "  status=$code content-type=$ctype"
+          [ "$code" = "200" ] || { echo "  FAIL: expected 200"; return 1; }
+          case "$ctype" in *"$want"*) echo "  PASS";; *) echo "  FAIL: expected content-type containing $want"; return 1;; esac
+        }
+
+        FAIL=0
+        check "$BASE/" "text/html" || FAIL=1
+        if [ -n "$JPG" ]; then check "$BASE/$JPG" "image/jpeg" || FAIL=1; else echo "(no jpg asset uploaded — add one to app/assets/jpg and re-run up)"; fi
+        if [ -n "$PDF" ]; then check "$BASE/$PDF" "application/pdf" || FAIL=1; else echo "(no pdf asset uploaded — add one to app/assets/pdf and re-run up)"; fi
+
+        [ "$FAIL" -eq 0 ] && echo "PASS: CloudFront routes path -> bucket as expected." || { echo "FAIL"; exit 1; }
+
+  down:
+    desc: Destroy all infra
+    dir: infra
+    dotenv: ['../.env']
+    cmds: [terragrunt run --all destroy --non-interactive]
