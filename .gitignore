@@ -61,6 +61,11 @@ go.work.sum
 # env file
 .env
 
+# Lambda build artifacts (compiled bootstrap + deployment zip)
+**/app/go/build/
+function.zip
+bootstrap
+
 # MacOS
 .DS_Store
 

@@ -61,6 +61,9 @@ includes:
   ecs-https:
     taskfile: aws/ecs-fargate-https/Taskfile.yml
     dir: aws/ecs-fargate-https
+  lambda-https:
+    taskfile: aws/lambda-alb-https/Taskfile.yml
+    dir: aws/lambda-alb-https
   gke-sqs:
     taskfile: aws-gcp/gke-sqs-federation/Taskfile.yml
     dir: aws-gcp/gke-sqs-federation

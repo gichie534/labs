@@ -1,0 +1,180 @@
+version: '3'
+
+# Lifecycle for the aws/lambda-alb-https lab.
+#
+# A Go "hello world" Lambda is invoked directly by an internet-facing ALB that terminates TLS with
+# an ACM certificate (HTTP :80 -> HTTPS :443 redirect). The app is reachable at https://$APP_DOMAIN.
+# Real deploys run from GitHub Actions; the package/deploy/verify tasks here mirror that flow for
+# local iteration.
+#
+# Flow:
+#   1. up      -> provision infra (VPC, ACM cert, Lambda, ALB with a lambda target, CI role, DNS).
+#                 The function is created from the locally-built zip; ignore_code_changes means
+#                 Terraform then stops managing the code, so CI owns later rollouts.
+#   2. deploy  -> build the zip and ship it with `aws lambda update-function-code`.
+#   3. verify  -> GET https://$APP_DOMAIN/.
+# `task lambda-https:all` runs deploy -> verify after `up`.
+#
+# Only `up` and `deploy` create/modify cloud resources. fmt/validate/plan/package are cost-free.
+#
+# CONFIG: lab inputs (AWS_REGION, TF_STATE_BUCKET, PARENT_ZONE_NAME, APP_DOMAIN, GITHUB_REPOSITORY)
+# are loaded from a local `.env` via Task's dotenv. Copy `.env.example` to `.env` and fill it in;
+# `.env` is gitignored. Because the root Taskfile includes this one, `dotenv:` is declared per-task
+# (a global top-level dotenv is rejected in an included Taskfile), and tasks that `dir: infra` load
+# `['../.env']` while the rest load `['.env']`.
+
+vars:
+  APP_DIR: app/go
+  FUNCTION: lambda-alb-https
+
+tasks:
+  default:
+    cmds: [task --list]
+    silent: true
+
+  init-env:
+    desc: Create a local .env from the template (no-op if .env already exists, so it never clobbers your values)
+    cmds:
+      - |
+        if [ -f .env ]; then
+          echo ".env already exists — leaving it untouched."
+        else
+          cp .env.example .env
+          echo "Created .env from .env.example — fill in your values."
+        fi
+
+  package:
+    desc: Compile the Go function to a provided.al2023 `bootstrap` zip (app/go/build/function.zip)
+    dir: app/go
+    cmds:
+      - mkdir -p build
+      - GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -tags lambda.norpc -o build/bootstrap .
+      - rm -f build/function.zip
+      - zip -j build/function.zip build/bootstrap
+    sources:
+      - '*.go'
+      - go.mod
+      - go.sum
+    generates:
+      - build/function.zip
+
+  fmt:
+    desc: Format Terragrunt HCL and Go
+    cmds:
+      - terragrunt hcl format
+      - gofmt -w ./app/go
+
+  validate:
+    desc: Validate every infra unit (cost-free)
+    deps: [package]
+    dir: infra
+    dotenv: ['../.env']
+    cmds: [terragrunt run --all validate]
+
+  lint:
+    desc: Lint Terraform/Terragrunt and vet the Go app
+    cmds:
+      - tflint --recursive
+      # app/go is its own Go module, so vet runs from inside it (not `./app/go/...` from the lab root).
+      - (cd app/go && go vet ./...)
+
+  plan:
+    desc: Plan all infra units (cost-free)
+    deps: [package]
+    dir: infra
+    dotenv: ['../.env']
+    cmds: [terragrunt run --all plan]
+
+  state-bootstrap:
+    desc: 'Create the S3 state bucket (run once; needs TF_STATE_BUCKET + admin creds)'
+    dir: infra
+    dotenv: ['../.env']
+    cmds:
+      - terragrunt backend bootstrap --all --non-interactive
+
+  up:
+    desc: 'Provision all infra — VPC, ACM cert, Lambda, ALB (HTTPS, lambda target), CI role, DNS (creates cloud resources)'
+    deps: [package]
+    dir: infra
+    dotenv: ['../.env']
+    cmds: [terragrunt run --all apply --non-interactive]
+
+  deploy:
+    desc: Build the function zip and ship it with update-function-code (mirrors the CI pipeline)
+    deps: [package]
+    dotenv: ['.env']
+    cmds:
+      - |
+        set -euo pipefail
+        : "${AWS_REGION:?set AWS_REGION}"
+        ZIP="{{.APP_DIR}}/build/function.zip"
+
+        echo "==> update-function-code {{.FUNCTION}}"
+        aws lambda update-function-code \
+          --region "$AWS_REGION" \
+          --function-name {{.FUNCTION}} \
+          --zip-file "fileb://$ZIP" >/dev/null
+
+        echo "==> wait for the update to settle"
+        aws lambda wait function-updated --region "$AWS_REGION" --function-name {{.FUNCTION}}
+        echo "    {{.FUNCTION}} updated"
+
+  verify:
+    desc: GET the public HTTPS endpoint
+    dotenv: ['.env']
+    cmds:
+      - |
+        set -euo pipefail
+        : "${APP_DOMAIN:?set APP_DOMAIN=<the public hostname>}"
+        echo "Probing https://$APP_DOMAIN/ ..."
+        for i in $(seq 1 30); do
+          if curl -fsS --max-time 10 "https://$APP_DOMAIN/"; then
+            echo "OK: served over HTTPS"
+            exit 0
+          fi
+          echo "  not ready yet (attempt $i); retrying..."
+          sleep 10
+        done
+        echo "FAILED: could not reach https://$APP_DOMAIN/ over HTTPS." >&2
+        exit 1
+
+  all:
+    desc: After `up`, run the full app path — deploy -> verify
+    cmds:
+      - task: deploy
+      - task: verify
+
+  endpoint:
+    desc: Print the app URL and the ALB DNS name
+    dir: infra/alb
+    dotenv: ['../../.env']
+    cmds:
+      - |
+        echo "app:  https://${APP_DOMAIN:-<APP_DOMAIN unset>}/"
+        echo -n "alb:  "; terragrunt output -raw dns_name; echo
+
+  ci-config:
+    desc: Print the IAM role ARN to set as the GitHub Actions AWS_ROLE_ARN variable
+    dir: infra/deployer-oidc
+    dotenv: ['../../.env']
+    cmds:
+      - |
+        echo "Set this as a GitHub Actions repository variable:"
+        echo -n "AWS_ROLE_ARN="; terragrunt output -json role_arns | jq -r '.github_deployer'
+
+  test:
+    desc: Run the Go app tests; validate as a cheap infra smoke test
+    cmds:
+      - task: test-app
+      - task: validate
+
+  test-app:
+    internal: true
+    dir: app/go
+    cmds: [go test ./...]
+
+  down:
+    desc: Destroy all infra
+    dir: infra
+    dotenv: ['../.env']
+    cmds: [terragrunt run --all destroy --non-interactive]

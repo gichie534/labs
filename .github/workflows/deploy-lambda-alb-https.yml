@@ -1,0 +1,89 @@
+# Build the Go "hello world" function, ship it to Lambda with update-function-code, and test the
+# public HTTPS endpoint — all keyless via GitHub OIDC (no long-lived AWS access keys).
+#
+# Required repository variables (Settings > Secrets and variables > Actions > Variables):
+#   AWS_REGION        e.g. us-east-1
+#   AWS_ROLE_ARN      IAM role to assume — from `task lambda-https:ci-config`
+#   APP_DOMAIN        the public hostname, e.g. lambda-https.aws.richardbatyrov.com
+#
+# The lab-fixed name (the Lambda function) is hardcoded below as a constant — it's always
+# "lambda-alb-https" for this lab, not per-environment.
+#
+# Auth is DIRECT federation: the workflow assumes AWS_ROLE_ARN itself with a short-lived OIDC token,
+# no access keys. The role (deployer-oidc unit) is scoped to this repo's main branch and to just
+# lambda:UpdateFunctionCode + Get on this function.
+#
+# SCOPE: this is the steady-state APP loop. It assumes the infrastructure, ACM certificate, the ALB,
+# and the DNS A record were stood up once by the operator via the Taskfile (`task lambda-https:up`).
+# Those persist across deploys; CI just ships new function code and re-tests. The function's
+# ignore_code_changes means Terraform never reverts what CI deploys.
+#
+# This workflow lives inside the lab folder. To have GitHub run it, a copy is provided at the repo
+# root as .github/workflows/deploy-lambda-alb-https.yml.
+
+name: deploy-lambda-alb-https
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "aws/lambda-alb-https/app/go/**"
+      - ".github/workflows/deploy-lambda-alb-https.yml"
+
+permissions:
+  contents: read
+  id-token: write # required for GitHub to mint the OIDC token used for AWS federation
+
+env:
+  APP_DIR: aws/lambda-alb-https/app/go
+  FUNCTION: lambda-alb-https
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: ${{ env.APP_DIR }}/go.mod
+
+      - name: Build the provided.al2023 bootstrap zip
+        working-directory: ${{ env.APP_DIR }}
+        run: |
+          set -euo pipefail
+          GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -tags lambda.norpc -o bootstrap .
+          zip -j function.zip bootstrap
+
+      - name: Configure AWS credentials (keyless, GitHub OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Deploy new function code
+        run: |
+          set -euo pipefail
+          aws lambda update-function-code \
+            --function-name "$FUNCTION" \
+            --zip-file "fileb://$APP_DIR/function.zip" >/dev/null
+          aws lambda wait function-updated --function-name "$FUNCTION"
+          echo "$FUNCTION updated"
+
+      - name: Test the public HTTPS endpoint
+        env:
+          APP_DOMAIN: ${{ vars.APP_DOMAIN }}
+        run: |
+          echo "Probing https://$APP_DOMAIN/ ..."
+          for i in $(seq 1 30); do
+            if curl -fsS --max-time 10 "https://$APP_DOMAIN/"; then
+              echo "OK: served over HTTPS"
+              exit 0
+            fi
+            echo "  not ready yet (attempt $i); retrying..."
+            sleep 10
+          done
+          echo "FAILED: could not reach https://$APP_DOMAIN/ over HTTPS." >&2
+          exit 1
