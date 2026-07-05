@@ -5,12 +5,10 @@
 # Required repository variables (Settings > Secrets and variables > Actions > Variables):
 #   AWS_REGION        e.g. us-east-1
 #   AWS_ROLE_ARN      IAM role to assume — from `task ecs-https:ci-config`
-#   ECR_REPOSITORY    ecs-fargate-https
-#   ECS_CLUSTER       ecs-fargate-https
-#   ECS_SERVICE       ecs-fargate-https
-#   ECS_TASK_FAMILY   ecs-fargate-https
-#   CONTAINER_NAME    app
 #   APP_DOMAIN        the public hostname, e.g. ecs-https.aws.richardbatyrov.com
+#
+# The lab-fixed names (ECR repository, ECS cluster/service, task family, container) are hardcoded
+# below as constants — they're always "ecs-fargate-https" / "app" for this lab, not per-environment.
 #
 # Auth is DIRECT federation: the workflow assumes AWS_ROLE_ARN itself with a short-lived OIDC token,
 # no access keys. The role (deployer-oidc unit) is scoped to this repo's main branch and to just

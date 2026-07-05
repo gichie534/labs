@@ -100,11 +100,12 @@ task ecs-https:ci-config
 # AWS_ROLE_ARN=arn:aws:iam::<account>:role/ecs-fargate-https-github_deployer
 ```
 
-Set these repository **Variables**: `AWS_REGION`, `AWS_ROLE_ARN`, `ECR_REPOSITORY=ecs-fargate-https`,
-`ECS_CLUSTER=ecs-fargate-https`, `ECS_SERVICE=ecs-fargate-https`, `ECS_TASK_FAMILY=ecs-fargate-https`,
-`CONTAINER_NAME=app`, and `APP_DOMAIN`. On push to `main` (or manual dispatch) the workflow builds,
-pushes to ECR, registers a new task-def revision, rolls the service, and **GETs the public HTTPS
-endpoint** — keyless via OIDC.
+Set these repository **Variables**: `AWS_REGION`, `AWS_ROLE_ARN`, and `APP_DOMAIN`. The lab-fixed
+names (ECR repository, ECS cluster/service, task family, container) are hardcoded as constants in the
+workflow — they are always `ecs-fargate-https` / `app`, so only the account- and domain-specific
+values are variables. On push to `main` (or manual dispatch) the workflow builds, pushes to ECR,
+registers a new task-def revision, rolls the service, and **GETs the public HTTPS endpoint** —
+keyless via OIDC.
 
 > The Action is the steady-state **app loop**; it assumes infra, the certificate, and the DNS record
 > were stood up once by the Taskfile. It holds minimal permissions (ECR push/pull + ECS

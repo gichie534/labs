@@ -5,12 +5,10 @@
 # Required repository variables (Settings > Secrets and variables > Actions > Variables):
 #   AWS_REGION        e.g. us-east-1
 #   AWS_ROLE_ARN      IAM role to assume — from `task ecs-https:ci-config`
-#   ECR_REPOSITORY    ecs-fargate-https
-#   ECS_CLUSTER       ecs-fargate-https
-#   ECS_SERVICE       ecs-fargate-https
-#   ECS_TASK_FAMILY   ecs-fargate-https
-#   CONTAINER_NAME    app
 #   APP_DOMAIN        the public hostname, e.g. ecs-https.aws.richardbatyrov.com
+#
+# The lab-fixed names (ECR repository, ECS cluster/service, task family, container) are hardcoded
+# below as constants — they're always "ecs-fargate-https" / "app" for this lab, not per-environment.
 #
 # Auth is DIRECT federation: the workflow assumes AWS_ROLE_ARN itself with a short-lived OIDC token,
 # no access keys. The role (deployer-oidc unit) is scoped to this repo's main branch and to just
@@ -60,7 +58,7 @@ jobs:
         id: build
         env:
           REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-          REPOSITORY: ${{ vars.ECR_REPOSITORY }}
+          REPOSITORY: ecs-fargate-https
         run: |
           IMAGE="$REGISTRY/$REPOSITORY:${GITHUB_SHA::12}"
           echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
@@ -69,7 +67,7 @@ jobs:
 
       - name: Render current task definition to a file
         run: |
-          aws ecs describe-task-definition --task-definition "${{ vars.ECS_TASK_FAMILY }}" \
+          aws ecs describe-task-definition --task-definition "ecs-fargate-https" \
             --query 'taskDefinition.{family:family,taskRoleArn:taskRoleArn,executionRoleArn:executionRoleArn,networkMode:networkMode,containerDefinitions:containerDefinitions,requiresCompatibilities:requiresCompatibilities,cpu:cpu,memory:memory,runtimePlatform:runtimePlatform}' \
             > task-definition.json
 
@@ -78,15 +76,15 @@ jobs:
         uses: aws-actions/amazon-ecs-render-task-definition@v1
         with:
           task-definition: task-definition.json
-          container-name: ${{ vars.CONTAINER_NAME }}
+          container-name: app
           image: ${{ steps.build.outputs.image }}
 
       - name: Deploy to ECS (register revision + roll service)
         uses: aws-actions/amazon-ecs-deploy-task-definition@v2
         with:
           task-definition: ${{ steps.taskdef.outputs.task-definition }}
-          service: ${{ vars.ECS_SERVICE }}
-          cluster: ${{ vars.ECS_CLUSTER }}
+          service: ecs-fargate-https
+          cluster: ecs-fargate-https
           wait-for-service-stability: true
 
       - name: Test the public HTTPS endpoint
