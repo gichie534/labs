@@ -58,6 +58,9 @@ includes:
   lambda-vpc:
     taskfile: aws/lambda-vpc-private-access/Taskfile.yml
     dir: aws/lambda-vpc-private-access
+  ecs-https:
+    taskfile: aws/ecs-fargate-https/Taskfile.yml
+    dir: aws/ecs-fargate-https
   gke-sqs:
     taskfile: aws-gcp/gke-sqs-federation/Taskfile.yml
     dir: aws-gcp/gke-sqs-federation
