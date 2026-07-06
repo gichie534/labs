@@ -1,0 +1,119 @@
+# Ship the AI gallery — build+push the gallery container image and roll the Fargate service, then
+# update the four Python Lambda microservices with update-function-code, and test the public HTTPS
+# endpoint. All keyless via GitHub OIDC (no long-lived AWS access keys).
+#
+# Required repository variables (Settings > Secrets and variables > Actions > Variables):
+#   AWS_REGION        e.g. us-east-1
+#   AWS_ROLE_ARN      IAM role to assume — from `task ai-gallery:ci-config`
+#   APP_DOMAIN        the public hostname, e.g. ai-gallery.aws.richardbatyrov.com
+#
+# Lab-fixed names (ECR repo, ECS cluster/service, task family, container, Lambda function names) are
+# hardcoded below — they're constant for this lab, not per-environment.
+#
+# SCOPE: this is the steady-state APP loop. It assumes the infrastructure, buckets, DynamoDB, the
+# delegated zone, ACM cert, ALB, DNS record, and the Lambdas were stood up once by the operator via
+# the Taskfile (`task ai-gallery:up`). CI just ships new code (container image + Lambda zips).
+# ignore_task_definition_changes / ignore_code_changes mean Terraform never reverts what CI deploys.
+#
+# This is the copy GitHub runs; the source of truth lives in the lab at
+# aws/serverless-ai-gallery/.github/workflows/deploy.yml.
+
+name: deploy-serverless-ai-gallery
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "aws/serverless-ai-gallery/app/**"
+      - ".github/workflows/deploy-serverless-ai-gallery.yml"
+
+permissions:
+  contents: read
+  id-token: write # required for GitHub to mint the OIDC token used for AWS federation
+
+env:
+  GALLERY_DIR: aws/serverless-ai-gallery/app/gallery
+  LAMBDA_DIR: aws/serverless-ai-gallery/app/lambdas
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (keyless, GitHub OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Log in to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push the gallery image
+        id: build
+        env:
+          REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          REPOSITORY: serverless-ai-gallery
+        run: |
+          IMAGE="$REGISTRY/$REPOSITORY:${GITHUB_SHA::12}"
+          echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
+          docker build --platform linux/amd64 -t "$IMAGE" "$GALLERY_DIR"
+          docker push "$IMAGE"
+
+      - name: Render current task definition to a file
+        run: |
+          aws ecs describe-task-definition --task-definition "serverless-ai-gallery" \
+            --query 'taskDefinition.{family:family,taskRoleArn:taskRoleArn,executionRoleArn:executionRoleArn,networkMode:networkMode,containerDefinitions:containerDefinitions,requiresCompatibilities:requiresCompatibilities,cpu:cpu,memory:memory,runtimePlatform:runtimePlatform}' \
+            > task-definition.json
+
+      - name: Set the new image in the task definition
+        id: taskdef
+        uses: aws-actions/amazon-ecs-render-task-definition@v1
+        with:
+          task-definition: task-definition.json
+          container-name: app
+          image: ${{ steps.build.outputs.image }}
+
+      - name: Deploy to ECS (register revision + roll service)
+        uses: aws-actions/amazon-ecs-deploy-task-definition@v2
+        with:
+          task-definition: ${{ steps.taskdef.outputs.task-definition }}
+          service: serverless-ai-gallery
+          cluster: serverless-ai-gallery
+          wait-for-service-stability: true
+
+      - name: Package and deploy the Lambda microservices
+        run: |
+          set -euo pipefail
+          cd "$LAMBDA_DIR"
+          for fn in push fetch ai; do
+            ( cd "$fn" && rm -f "$fn.zip" && zip -q -j "$fn.zip" "$fn.py" )
+          done
+          ( cd upload && rm -f upload.zip && zip -q -j upload.zip upload.py upload.html upload.js )
+
+          declare -A ZIP=( [ai-gallery-upload]=upload [ai-gallery-push]=push [ai-gallery-fetch]=fetch [ai-gallery-ai]=ai )
+          for fn in ai-gallery-upload ai-gallery-push ai-gallery-fetch ai-gallery-ai; do
+            dir="${ZIP[$fn]}"
+            echo "==> update-function-code $fn"
+            aws lambda update-function-code --function-name "$fn" --zip-file "fileb://$dir/$dir.zip" >/dev/null
+            aws lambda wait function-updated --function-name "$fn"
+          done
+
+      - name: Test the public HTTPS endpoint
+        env:
+          APP_DOMAIN: ${{ vars.APP_DOMAIN }}
+        run: |
+          echo "Probing https://$APP_DOMAIN/ ..."
+          for i in $(seq 1 30); do
+            if curl -fsS --max-time 10 "https://$APP_DOMAIN/" >/dev/null; then
+              echo "OK: gallery served over HTTPS"
+              exit 0
+            fi
+            echo "  not ready yet (attempt $i); retrying..."
+            sleep 10
+          done
+          echo "FAILED: could not reach https://$APP_DOMAIN/ over HTTPS." >&2
+          exit 1

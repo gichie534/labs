@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+    <meta charset="utf-8">
+    <title>Upload Image</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <link href="https://stackpath.bootstrapcdn.com/bootstrap/4.5.2/css/bootstrap.min.css" rel="stylesheet">
+</head>
+
+<body>
+    <div class="container">
+        <div class="row mt-5">
+            <div class="col-12 col-md-8 offset-md-2 text-center">
+                <h1>Upload an Image</h1>
+            </div>
+            <div class="col-12 col-md-2 text-right">
+                <a href="__GALLERY_URL__" class="btn btn-secondary">Back to Gallery</a>
+            </div>
+        </div>
+        <div class="row">
+            <div class="col-md-12 d-flex justify-content-center">
+                <form id="upload-form" class="text-center" enctype="multipart/form-data">
+                    <div class="custom-file mb-3">
+                        <input type="file" class="custom-file-input" id="imageUpload" name="file" accept="image/*"
+                            required>
+                        <label class="custom-file-label" for="imageUpload">Choose file</label>
+                    </div>
+                    <button type="submit" class="btn btn-primary">Upload</button>
+                </form>
+            </div>
+        </div>
+        <div class="row" style="margin-top: 50px;">
+            <div class="col-md-12 d-flex justify-content-center">
+                <div id="spinner" class="spinner-border text-primary" role="status"
+                    style="display: none; margin-top: 100px;">
+                    <span class="sr-only">Uploading...</span>
+                </div>
+            </div>
+        </div>
+        <div class="row">
+            <div class="col-md-12 d-flex justify-content-center">
+                <div id="message" class="mt-3"></div>
+            </div>
+        </div>
+    </div>
+    <script src="upload.js"></script>
+    <script src="https://code.jquery.com/jquery-3.5.1.slim.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@popperjs/core@2.11.0/dist/umd/popper.min.js"></script>
+    <script src="https://stackpath.bootstrapcdn.com/bootstrap/4.5.2/js/bootstrap.min.js"></script>
+</body>
+
+</html>

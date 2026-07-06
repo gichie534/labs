@@ -1,0 +1,2 @@
+# Lambda / gallery build artifacts (deployment zips + compiled binaries).
+app/**/build/

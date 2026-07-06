@@ -64,6 +64,9 @@ includes:
   lambda-https:
     taskfile: aws/lambda-alb-https/Taskfile.yml
     dir: aws/lambda-alb-https
+  ai-gallery:
+    taskfile: aws/serverless-ai-gallery/Taskfile.yml
+    dir: aws/serverless-ai-gallery
   gke-sqs:
     taskfile: aws-gcp/gke-sqs-federation/Taskfile.yml
     dir: aws-gcp/gke-sqs-federation

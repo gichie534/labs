@@ -1,0 +1,220 @@
+version: '3'
+
+# Lifecycle for the aws/serverless-ai-gallery lab.
+#
+# An AI image gallery: a Go static-server container on ECS Fargate behind an HTTPS ALB serves the
+# gallery page; four Python Lambda microservices (upload, push, fetch, ai) + S3 + DynamoDB + Amazon
+# Bedrock power the upload/process/describe pipeline. Real deploys run from GitHub Actions; the
+# build/package/deploy/verify tasks here mirror that flow for local iteration.
+#
+# Flow:
+#   1. up      -> provision all infra (VPC, ECR, DynamoDB, buckets, 4 Lambdas + S3 event, delegated
+#                 Route 53 zone, ACM cert, ALB, Fargate service, CI role, DNS). Lambdas are created
+#                 from the initial zips; the Fargate service points at a :bootstrap image that doesn't
+#                 exist yet, so the gallery has no healthy tasks until the first deploy.
+#   2. deploy  -> build + push the gallery image and roll the service, and ship new Lambda code with
+#                 update-function-code.
+#   3. verify  -> GET https://$APP_DOMAIN/.
+# `task ai-gallery:all` runs deploy -> verify after `up`.
+#
+# Only `up` and `deploy` create/modify cloud resources. fmt/validate/plan/package are cost-free.
+#
+# CONFIG: lab inputs are loaded from a local `.env` via Task's dotenv. Copy `.env.example` to `.env`
+# and fill it in; `.env` is gitignored. Because the root Taskfile includes this one, `dotenv:` is
+# declared per-task; tasks that `dir: infra` load `['../.env']`, the rest load `['.env']`.
+
+vars:
+  GALLERY_DIR: app/gallery
+  LAMBDA_DIR: app/lambdas
+  IMAGE_NAME: serverless-ai-gallery
+  CLUSTER: serverless-ai-gallery
+  SERVICE: serverless-ai-gallery
+  FAMILY: serverless-ai-gallery
+  CONTAINER: app
+  # function name -> handler dir, used by package/deploy.
+  LAMBDAS: ai-gallery-upload ai-gallery-push ai-gallery-fetch ai-gallery-ai
+
+tasks:
+  default:
+    cmds: [task --list]
+    silent: true
+
+  init-env:
+    desc: Create a local .env from the template (no-op if .env already exists, so it never clobbers your values)
+    cmds:
+      - |
+        if [ -f .env ]; then
+          echo ".env already exists — leaving it untouched."
+        else
+          cp .env.example .env
+          echo "Created .env from .env.example — fill in your values."
+        fi
+
+  package:
+    desc: Build the four Lambda deployment zips (app/lambdas/<fn>/build/<fn>.zip)
+    cmds:
+      - |
+        set -euo pipefail
+        cd {{.LAMBDA_DIR}}
+        for fn in push fetch ai; do
+          mkdir -p "$fn/build"
+          rm -f "$fn/build/$fn.zip"
+          ( cd "$fn" && zip -q -j "build/$fn.zip" "$fn.py" )
+          echo "packaged $fn/build/$fn.zip"
+        done
+        # upload bundles its static assets alongside the handler
+        mkdir -p upload/build
+        rm -f upload/build/upload.zip
+        ( cd upload && zip -q -j build/upload.zip upload.py upload.html upload.js )
+        echo "packaged upload/build/upload.zip"
+
+  fmt:
+    desc: Format Terragrunt HCL and the Go gallery app
+    cmds:
+      - terragrunt hcl format
+      - gofmt -w ./{{.GALLERY_DIR}}
+
+  validate:
+    desc: Validate every infra unit (cost-free)
+    deps: [package]
+    dir: infra
+    dotenv: ['../.env']
+    cmds: [terragrunt run --all validate]
+
+  lint:
+    desc: Lint Terraform/Terragrunt, vet the Go app, and syntax-check the Python handlers
+    cmds:
+      - tflint --recursive
+      - (cd {{.GALLERY_DIR}} && go vet ./...)
+      - python3 -m py_compile {{.LAMBDA_DIR}}/upload/upload.py {{.LAMBDA_DIR}}/push/push.py {{.LAMBDA_DIR}}/fetch/fetch.py {{.LAMBDA_DIR}}/ai/ai.py
+
+  plan:
+    desc: Plan all infra units (cost-free)
+    deps: [package]
+    dir: infra
+    dotenv: ['../.env']
+    cmds: [terragrunt run --all plan]
+
+  state-bootstrap:
+    desc: 'Create the S3 state bucket (run once; needs TF_STATE_BUCKET + admin creds)'
+    dir: infra
+    dotenv: ['../.env']
+    cmds:
+      - terragrunt backend bootstrap --all --non-interactive
+
+  up:
+    desc: 'Provision all infra (creates cloud resources)'
+    deps: [package]
+    dir: infra
+    dotenv: ['../.env']
+    cmds: [terragrunt run --all apply --non-interactive]
+
+  build:
+    desc: Build the gallery container image locally (linux/amd64 to match Fargate tasks)
+    cmds:
+      - docker build --platform linux/amd64 -t {{.IMAGE_NAME}}:{{.TAG | default "dev"}} {{.GALLERY_DIR}}
+
+  deploy:
+    desc: Push the gallery image + roll the service, and ship new Lambda code (mirrors the CI pipeline)
+    deps: [build, package]
+    dotenv: ['.env']
+    cmds:
+      - |
+        set -euo pipefail
+        : "${AWS_REGION:?set AWS_REGION}"
+        TAG="{{.TAG | default "dev"}}"
+
+        # --- gallery container -> ECR -> ECS ---
+        REPO_URL="$(cd infra/registry && terragrunt output -raw repository_url)"
+        REG_HOST="${REPO_URL%/*}"
+        IMAGE="$REPO_URL:$TAG"
+
+        echo "==> push $IMAGE"
+        aws ecr get-login-password --region "$AWS_REGION" | docker login --username AWS --password-stdin "$REG_HOST"
+        docker tag {{.IMAGE_NAME}}:"$TAG" "$IMAGE"
+        docker push "$IMAGE"
+
+        echo "==> register new task-definition revision"
+        TASKDEF="$(aws ecs describe-task-definition --region "$AWS_REGION" --task-definition {{.FAMILY}} \
+          --query 'taskDefinition.{family:family,taskRoleArn:taskRoleArn,executionRoleArn:executionRoleArn,networkMode:networkMode,containerDefinitions:containerDefinitions,requiresCompatibilities:requiresCompatibilities,cpu:cpu,memory:memory,runtimePlatform:runtimePlatform}')"
+        NEWDEF="$(echo "$TASKDEF" | jq --arg IMG "$IMAGE" '.containerDefinitions |= map(if .name=="{{.CONTAINER}}" then .image=$IMG else . end)')"
+        REV="$(aws ecs register-task-definition --region "$AWS_REGION" --cli-input-json "$NEWDEF" --query 'taskDefinition.taskDefinitionArn' --output text)"
+        echo "    registered $REV"
+
+        echo "==> update service and wait for stable"
+        aws ecs update-service --region "$AWS_REGION" --cluster {{.CLUSTER}} --service {{.SERVICE}} --task-definition "$REV" >/dev/null
+        aws ecs wait services-stable --region "$AWS_REGION" --cluster {{.CLUSTER}} --service {{.SERVICE}}
+        echo "    service is stable on $REV"
+
+        # --- Lambda microservices -> update-function-code ---
+        declare -A ZIP=( [ai-gallery-upload]=upload [ai-gallery-push]=push [ai-gallery-fetch]=fetch [ai-gallery-ai]=ai )
+        for fn in {{.LAMBDAS}}; do
+          dir="${ZIP[$fn]}"
+          echo "==> update-function-code $fn"
+          aws lambda update-function-code --region "$AWS_REGION" --function-name "$fn" \
+            --zip-file "fileb://{{.LAMBDA_DIR}}/$dir/build/$dir.zip" >/dev/null
+          aws lambda wait function-updated --region "$AWS_REGION" --function-name "$fn"
+          echo "    $fn updated"
+        done
+
+  verify:
+    desc: GET the public HTTPS endpoint
+    dotenv: ['.env']
+    cmds:
+      - |
+        set -euo pipefail
+        : "${APP_DOMAIN:?set APP_DOMAIN=<the public hostname>}"
+        echo "Probing https://$APP_DOMAIN/ ..."
+        for i in $(seq 1 30); do
+          if curl -fsS --max-time 10 "https://$APP_DOMAIN/" >/dev/null; then
+            echo "OK: gallery served over HTTPS"
+            exit 0
+          fi
+          echo "  not ready yet (attempt $i); retrying..."
+          sleep 10
+        done
+        echo "FAILED: could not reach https://$APP_DOMAIN/ over HTTPS." >&2
+        exit 1
+
+  all:
+    desc: After `up`, run the full app path — deploy -> verify
+    cmds:
+      - task: deploy
+      - task: verify
+
+  endpoint:
+    desc: Print the gallery URL, the ALB DNS name, and the Lambda Function URLs
+    dotenv: ['.env']
+    cmds:
+      - |
+        echo "gallery: https://${APP_DOMAIN:-<APP_DOMAIN unset>}/"
+        echo -n "alb:     "; (cd infra/alb && terragrunt output -raw dns_name); echo
+        echo -n "upload:  "; (cd infra/lambdas/upload-page && terragrunt output -raw function_url); echo
+        echo -n "fetch:   "; (cd infra/lambdas/fetch && terragrunt output -raw function_url); echo
+        echo -n "ai:      "; (cd infra/lambdas/ai && terragrunt output -raw function_url); echo
+
+  ci-config:
+    desc: Print the IAM role ARN to set as the GitHub Actions AWS_ROLE_ARN variable
+    dir: infra/deployer-oidc
+    dotenv: ['../../.env']
+    cmds:
+      - |
+        echo "Set this as a GitHub Actions repository variable:"
+        echo -n "AWS_ROLE_ARN="; terragrunt output -json role_arns | jq -r '.github_deployer'
+
+  test:
+    desc: Run the Go app tests; validate as a cheap infra smoke test
+    cmds:
+      - task: test-app
+      - task: validate
+
+  test-app:
+    internal: true
+    dir: app/gallery
+    cmds: [go test ./...]
+
+  down:
+    desc: Destroy all infra
+    dir: infra
+    dotenv: ['../.env']
+    cmds: [terragrunt run --all destroy --non-interactive]
