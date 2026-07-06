@@ -131,7 +131,11 @@ inputs = {
           {
             Sid    = "LambdaDeploy"
             Effect = "Allow"
-            Action = ["lambda:UpdateFunctionCode", "lambda:GetFunction"]
+            Action = [
+              "lambda:UpdateFunctionCode",
+              "lambda:GetFunction",
+              "lambda:GetFunctionConfiguration", # used by `aws lambda wait function-updated`
+            ]
             Resource = [
               dependency.upload_page.outputs.function_arn,
               dependency.push.outputs.function_arn,
