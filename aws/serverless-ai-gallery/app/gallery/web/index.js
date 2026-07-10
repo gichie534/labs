@@ -3,11 +3,13 @@
 // not hardcode real URLs here.
 const FETCH_URL = '__FETCH_URL__';           // fetch-image Function URL (GET, no trailing slash)
 const AI_URL = '__AI_URL__';                 // ai Function URL (POST)
+const UPLOAD_URL = '__UPLOAD_URL__';         // upload Function URL (base for /generate-presigned-url)
 
 document.addEventListener('DOMContentLoaded', function () {
     const gallery = document.getElementById('image-gallery');
 
     loadGallery();
+    wireUpload();
 
     // Fetch the image list and (re)render the gallery. Called on load; each card refreshes its own
     // description in place after its button is clicked — never a full window.location.reload().
@@ -55,6 +57,55 @@ document.addEventListener('DOMContentLoaded', function () {
         card.appendChild(imgElement);
         card.appendChild(cardBody);
         gallery.appendChild(card);
+    }
+
+    // Upload flow, driven from the modal on this page (no separate upload page). Asks the upload
+    // Lambda for a presigned PUT URL (cross-origin GET — the Lambda's Function URL must allow CORS),
+    // then PUTs the file straight to S3 (the upload bucket's CORS allows the PUT).
+    function wireUpload() {
+        const form = document.getElementById('upload-form');
+        const fileInput = document.getElementById('imageUpload');
+        const spinner = document.getElementById('upload-spinner');
+        const message = document.getElementById('upload-message');
+        const label = form.querySelector('.custom-file-label');
+
+        fileInput.addEventListener('change', () => {
+            if (fileInput.files[0]) label.textContent = fileInput.files[0].name;
+        });
+
+        form.addEventListener('submit', function (e) {
+            e.preventDefault();
+            const file = fileInput.files[0];
+            if (!file) return;
+
+            const contentType = file.type || 'application/octet-stream';
+            spinner.style.display = 'inline-block';
+            message.innerHTML = '';
+
+            // 1) presigned PUT URL from the upload Lambda (same endpoint the old upload page used).
+            fetch(`${UPLOAD_URL}/generate-presigned-url?content-type=${encodeURIComponent(contentType)}`)
+                .then(response => response.json())
+                // 2) PUT the file straight to S3 with that presigned URL.
+                .then(data => fetch(data.upload_url, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': contentType },
+                    body: file,
+                }))
+                .then(uploadResponse => {
+                    if (!uploadResponse.ok) throw new Error('Upload failed');
+                    spinner.style.display = 'none';
+                    message.innerHTML = `<div class="alert alert-success mb-0">Uploaded "${file.name}". It will appear in the gallery shortly.</div>`;
+                    form.reset();
+                    label.textContent = 'Choose file';
+                    // The push Lambda processes the image asynchronously; give it a moment, then refresh.
+                    setTimeout(loadGallery, 3000);
+                })
+                .catch(error => {
+                    console.error('Upload error:', error);
+                    spinner.style.display = 'none';
+                    message.innerHTML = `<div class="alert alert-danger mb-0">Error uploading file.</div>`;
+                });
+        });
     }
 
     // The description may arrive as a plain string or as a raw Bedrock message object.

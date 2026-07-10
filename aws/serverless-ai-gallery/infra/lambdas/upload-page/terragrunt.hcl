@@ -40,8 +40,13 @@ inputs = {
     APP_DOMAIN    = get_env("APP_DOMAIN", "REPLACE_WITH_APP_DOMAIN")
   }
 
-  # Public HTTPS endpoint that serves the page and mints presigned URLs.
+  # Public HTTPS endpoint that mints presigned URLs. CORS allows the gallery page (a different origin)
+  # to call /generate-presigned-url from the browser now that upload is a modal on the gallery.
   create_function_url = true
+  function_url_cors = {
+    allow_methods = ["GET"]
+    allow_origins = ["*"]
+  }
 
   # Least privilege: the function only mints presigned PUT URLs, which requires PutObject on the
   # upload bucket (the presigned URL inherits the function's permission).

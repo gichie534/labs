@@ -23,9 +23,10 @@ var indexHTML string
 //go:embed web/index.js
 var indexJS string
 
-// Placeholders substituted with the Function URLs at request time.
+// Placeholders substituted with the Function URLs at request time. All three live in index.js now
+// (the upload page is a modal on the gallery, not a separate link).
 const (
-	placeholderUpload = "__UPLOAD_PAGE_URL__"
+	placeholderUpload = "__UPLOAD_URL__"
 	placeholderFetch  = "__FETCH_URL__"
 	placeholderAI     = "__AI_URL__"
 )
@@ -37,9 +38,10 @@ func main() {
 	fetchURL := os.Getenv("FETCH_FUNCTION_URL")
 	aiURL := os.Getenv("AI_FUNCTION_URL")
 
-	page := strings.ReplaceAll(indexHTML, placeholderUpload, uploadURL)
+	page := indexHTML
 	script := strings.ReplaceAll(indexJS, placeholderFetch, fetchURL)
 	script = strings.ReplaceAll(script, placeholderAI, aiURL)
+	script = strings.ReplaceAll(script, placeholderUpload, uploadURL)
 
 	mux := http.NewServeMux()
 

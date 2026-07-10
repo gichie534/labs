@@ -5,16 +5,10 @@ import (
 	"testing"
 )
 
-// The embedded assets must carry the placeholders the server substitutes at request time; a typo in
-// either the asset or the constant would silently ship un-wired URLs to the browser.
-func TestIndexHTMLHasUploadPlaceholder(t *testing.T) {
-	if !strings.Contains(indexHTML, placeholderUpload) {
-		t.Fatalf("index.html is missing the %q placeholder", placeholderUpload)
-	}
-}
-
+// The embedded index.js must carry the placeholders the server substitutes at request time; a typo
+// in either the asset or a constant would silently ship un-wired URLs to the browser.
 func TestIndexJSHasURLPlaceholders(t *testing.T) {
-	for _, ph := range []string{placeholderFetch, placeholderAI} {
+	for _, ph := range []string{placeholderFetch, placeholderAI, placeholderUpload} {
 		if !strings.Contains(indexJS, ph) {
 			t.Fatalf("index.js is missing the %q placeholder", ph)
 		}
