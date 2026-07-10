@@ -6,12 +6,11 @@ const AI_URL = '__AI_URL__';                 // ai Function URL (POST)
 
 document.addEventListener('DOMContentLoaded', function () {
     const gallery = document.getElementById('image-gallery');
-    const genBtn = document.getElementById('generateDescription');
 
     loadGallery();
 
-    // Fetch the image list and (re)render the gallery. Called on load and after an AI description is
-    // generated — never a full window.location.reload(), which would flash the whole page.
+    // Fetch the image list and (re)render the gallery. Called on load; each card refreshes its own
+    // description in place after its button is clicked — never a full window.location.reload().
     function loadGallery() {
         fetch(FETCH_URL)
             .then(response => response.json())
@@ -33,18 +32,25 @@ document.addEventListener('DOMContentLoaded', function () {
         imgElement.src = image.url;
         imgElement.className = 'card-img-top';
         imgElement.alt = 'Uploaded image';
-        imgElement.addEventListener('click', () => {
-            enlargeImage(image.url);
-            genBtn.setAttribute('data-image-id', imageId);
-        });
+        imgElement.style.cursor = 'pointer';
+        imgElement.addEventListener('click', () => enlargeImage(image.url)); // click to preview
 
         const cardBody = document.createElement('div');
         cardBody.className = 'card-body';
+
+        // Per-card button, sitting between the image and its description.
+        const genBtn = document.createElement('button');
+        genBtn.type = 'button';
+        genBtn.className = 'btn btn-primary btn-sm btn-block mb-2';
+        genBtn.textContent = 'Generate AI Description';
 
         const imgDescription = document.createElement('p');
         imgDescription.className = 'card-text';
         imgDescription.textContent = describe(image.description);
 
+        genBtn.addEventListener('click', () => generateAiDescription(imageId, genBtn, imgDescription));
+
+        cardBody.appendChild(genBtn);
         cardBody.appendChild(imgDescription);
         card.appendChild(imgElement);
         card.appendChild(cardBody);
@@ -65,20 +71,16 @@ document.addEventListener('DOMContentLoaded', function () {
     }
 
     // Object key basename, with any presigned-URL query string stripped, e.g.
-    // ".../images/uploads/abc123?X-Amz-..." -> "abc123". Stable id used for the card and the AI call.
+    // ".../images/uploads/abc123?X-Amz-..." -> "abc123".
     function extractImageId(imageUrl) {
         return imageUrl.substring(imageUrl.lastIndexOf('/') + 1).split('?')[0];
     }
 
-    genBtn.addEventListener('click', function () {
-        const imageId = this.getAttribute('data-image-id');
-        console.log('Generating AI description for image ID:', imageId);
-        this.innerHTML = '<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> Generating...';
-        this.disabled = true;
-        generateAiDescription(imageId);
-    });
+    // POST to the ai Lambda for this one image, then update just this card's text in place.
+    function generateAiDescription(imageId, btn, textEl) {
+        btn.innerHTML = '<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> Generating...';
+        btn.disabled = true;
 
-    function generateAiDescription(imageId) {
         fetch(AI_URL, {
             method: 'POST',
             headers: {
@@ -89,20 +91,14 @@ document.addEventListener('DOMContentLoaded', function () {
             .then(response => response.json())
             .then(data => {
                 console.log('AI description generated:', data.description);
-                // Update the matching card's text in place — no full-page reload.
-                const card = gallery.querySelector(`[data-image-id="${imageId}"]`);
-                if (card) {
-                    const text = card.querySelector('.card-text');
-                    if (text) text.textContent = describe(data.description);
-                }
-                genBtn.innerHTML = 'Generate AI Description';
-                genBtn.disabled = false;
-                $('#imageModal').modal('hide');
+                textEl.textContent = describe(data.description);
+                btn.textContent = 'Generate AI Description';
+                btn.disabled = false;
             })
             .catch(error => {
                 console.error('Error generating AI description:', error);
-                genBtn.innerHTML = 'Generate AI Description';
-                genBtn.disabled = false;
+                btn.textContent = 'Generate AI Description';
+                btn.disabled = false;
             });
     }
 });
