@@ -6,11 +6,6 @@ Fargate** behind an internet-facing **HTTPS ALB** (reachable at `https://$APP_DO
 upload → process → describe pipeline is four **Python Lambda microservices** wired to **S3** and
 **DynamoDB**. Deploys run from **GitHub Actions**, keyless via GitHub OIDC.
 
-This is the capstone build from `lab-instructions.md`, re-expressed in this repo's patterns:
-everything is Terraform modules composed by Terragrunt units (no click-ops), buckets stay private
-(presigned URLs, not public S3), and the app ships through a keyless CI pipeline. See
-`docs/adr/0001-serverless-ai-gallery.md` for the design decisions.
-
 ## Architecture
 
 ```
@@ -70,7 +65,7 @@ pinned tag (units marked *local* are lab glue):
 ## Prerequisites
 
 - An AWS account and an S3 bucket for Terraform state (`task ai-gallery:state-bootstrap`).
-- An **existing public Route 53 hosted zone** you own (here `aws.richardbatyrov.com`). This lab
+- An **existing public Route 53 hosted zone** you own (`your.domain.com`). This lab
   creates a **new child zone** for `$APP_DOMAIN` and delegates it from the parent.
 - **Bedrock model access**: enable the Claude Haiku model in the Bedrock console (Model access) in
   your region **before** generating descriptions. `BEDROCK_MODEL_ID` defaults to the Claude Haiku 4.5
