@@ -1,0 +1,8 @@
+# Local runtime config (secrets / bucket names)
+.env
+
+# Lambda build artifacts (produced by `task build`)
+build/
+
+# Python
+__pycache__/

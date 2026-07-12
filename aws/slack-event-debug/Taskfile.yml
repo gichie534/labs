@@ -1,0 +1,104 @@
+version: '3'
+
+# Lifecycle for the aws/slack-event-debug lab — a throwaway Slack event tap.
+#
+# It stands up a single Python Lambda behind a PUBLIC Lambda Function URL (no API Gateway, no VPC).
+# Point Slack's request URL at that endpoint; the handler logs the full incoming request to
+# CloudWatch and answers the Events API url_verification challenge. Use it to see exactly what Slack
+# POSTs (e.g. while debugging a Lex channel), then `down` it — it is not meant to live long.
+#
+# Only `up` creates cloud resources. fmt/validate/plan are cost-free (but need the zip built first,
+# so they depend on `build`).
+#
+# Env (see README / .env.example):
+#   AWS_REGION, TF_STATE_BUCKET   — required for real applies
+
+vars:
+  REGION: '{{.AWS_REGION | default "us-east-1"}}'
+  FUNCTION_NAME: slack-event-debug
+
+tasks:
+  default:
+    cmds: [task --list]
+    silent: true
+
+  init-env:
+    desc: Create a local .env from the template (no-op if .env already exists, so it never clobbers your values)
+    cmds:
+      - |
+        if [ -f .env ]; then
+          echo ".env already exists — leaving it untouched."
+        else
+          cp .env.example .env
+          echo "Created .env from .env.example — fill in your values."
+        fi
+
+  build:
+    desc: 'Zip the Python handler to build/function.zip'
+    cmds:
+      - mkdir -p build
+      - rm -f build/function.zip
+      - (cd app/python && zip -q -j ../../build/function.zip handler.py)
+      - echo "Built build/function.zip"
+
+  fmt:
+    desc: Format Terragrunt HCL
+    cmds:
+      - terragrunt hcl format
+
+  lint:
+    desc: Lint Terraform/Terragrunt and syntax-check the Python handler
+    cmds:
+      - tflint --recursive
+      - python3 -m py_compile app/python/handler.py
+
+  validate:
+    desc: Validate the infra unit (cost-free)
+    deps: [build]
+    dir: infra
+    dotenv: ['../.env']
+    cmds: [terragrunt run --all validate]
+
+  plan:
+    desc: Plan the infra unit (cost-free)
+    deps: [build]
+    dir: infra
+    dotenv: ['../.env']
+    cmds: [terragrunt run --all plan]
+
+  state-bootstrap:
+    desc: 'Create the S3 state bucket (run once; needs TF_STATE_BUCKET + admin creds)'
+    dir: infra
+    dotenv: ['../.env']
+    cmds:
+      - terragrunt backend bootstrap --all --non-interactive
+
+  up:
+    desc: 'Provision the Lambda + public Function URL (creates cloud resources)'
+    deps: [build]
+    dir: infra
+    dotenv: ['../.env']
+    cmds: [terragrunt run --all apply --non-interactive]
+
+  endpoint:
+    desc: 'Print the public Function URL to paste into Slack'
+    dir: infra/function
+    dotenv: ['../../.env']
+    cmds:
+      - terragrunt output -raw function_url
+
+  logs:
+    desc: 'Tail the Lambda CloudWatch logs (watch what Slack sends; Ctrl-C to stop)'
+    dotenv: ['.env']
+    cmds:
+      - aws logs tail /aws/lambda/{{.FUNCTION_NAME}} --region {{.REGION}} --since 15m --follow
+
+  test:
+    desc: 'Syntax-check the handler (cheap smoke test)'
+    cmds: [python3 -m py_compile app/python/handler.py]
+
+  down:
+    desc: Destroy all infra
+    dir: infra
+    dotenv: ['../.env']
+    cmds: [terragrunt run --all destroy --non-interactive]
