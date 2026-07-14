@@ -6,7 +6,7 @@ API `url_verification` handshake by echoing the `challenge`. Point Slack's reque
 exactly what Slack POSTs — handy when a downstream integration (e.g. an Amazon Lex Slack channel)
 isn't behaving and you need to inspect the payload. Spin it up, read the logs, tear it down.
 
-> ⚠️ The endpoint is **public and unauthenticated** (Slack webhooks can't sign SigV4). It only logs
+> ⚠️ The endpoint is **public and unauthenticated**. It only logs
 > and returns `200`, and it's meant to be short-lived. **Destroy it when you're done.**
 
 ## Architecture
@@ -23,7 +23,7 @@ Slack  ──HTTPS POST──▶  Lambda Function URL (auth: NONE)  ──▶  L
 | Unit             | Module       | Ref                 |
 | ---------------- | ------------ | ------------------- |
 | `infra/function` | `aws/lambda` | `aws-lambda-v0.3.0` |
-
+****
 ## Prerequisites
 
 - `tenv` (reads `.terraform-version` / `.terragrunt-version`), `terragrunt`, `aws` CLI, `zip`,
@@ -59,12 +59,6 @@ and answered with `200 ok`.
 ```bash
 task slack-debug:down
 ```
-
-## Cost-free checks
-
-`task slack-debug:fmt`, `task slack-debug:validate`, `task slack-debug:plan`, and
-`task slack-debug:lint` create no cloud resources (they build the zip locally and run Terragrunt in
-read-only modes).
 
 ## Not included (on purpose)
 

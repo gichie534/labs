@@ -9,7 +9,7 @@ can see exactly what Slack sends. It is invoked through a public Lambda Function
      other request just gets a 200 so Slack considers delivery successful.
 
 There is deliberately no Slack request-signature verification here — this is a short-lived debug tap
-you spin up, point Slack at, read the logs, and destroy. Do not leave it running.
+you spin up, point Slack at, read the logs, and destroy.
 """
 
 import base64
