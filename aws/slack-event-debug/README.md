@@ -35,19 +35,19 @@ Slack  ──HTTPS POST──▶  Lambda Function URL (auth: NONE)  ──▶  L
 
 ```bash
 # 1. Seed local config, then edit .env (set AWS_REGION and a unique TF_STATE_BUCKET)
-task slack-debug:init-env
+task init-env
 
 # 2. One-time: create the S3 state bucket
-task slack-debug:state-bootstrap
+task state-bootstrap
 
 # 3. Build the zip and provision the Lambda + Function URL
-task slack-debug:up
+task up
 
 # 4. Grab the public endpoint and paste it into Slack's request URL field
-task slack-debug:endpoint
+task endpoint
 
 # 5. Watch what Slack sends (Ctrl-C to stop)
-task slack-debug:logs
+task logs
 ```
 
 When Slack saves the request URL it sends a `url_verification` request; you'll see it in the logs and
@@ -57,7 +57,7 @@ and answered with `200 ok`.
 ## Tear it down
 
 ```bash
-task slack-debug:down
+task down
 ```
 
 ## Not included (on purpose)
