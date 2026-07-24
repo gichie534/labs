@@ -1,0 +1,14 @@
+# Google-managed SSL certificate for the external Application Load Balancer fronting the Ingress.
+# This is the classic-Ingress cert path (NOT Certificate Manager — that's Gateway-only). Validation
+# is by LOAD-BALANCER AUTHORIZATION: the cert only transitions to Active AFTER the domain's A record
+# resolves to the LB IP, so issuance completes in phase 2 (after `task gke-iap-pw:dns`). The Ingress
+# attaches it via the networking.gke.io/managed-certificates annotation.
+apiVersion: networking.gke.io/v1
+kind: ManagedCertificate
+metadata:
+  name: {{ include "hello.fullname" . }}
+  labels:
+    {{- include "hello.labels" . | nindent 4 }}
+spec:
+  domains:
+    - {{ .Values.domain | quote }}

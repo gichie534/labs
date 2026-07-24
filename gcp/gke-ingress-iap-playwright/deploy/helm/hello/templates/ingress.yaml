@@ -1,0 +1,21 @@
+# Classic GKE Ingress -> external Application Load Balancer (gce class). TLS terminates at the LB
+# using the Google-managed certificate; HTTP is redirected to HTTPS by the FrontendConfig. The LB IP
+# is EPHEMERAL (no global-static-ip-name annotation): it is allocated when this Ingress is created
+# and is read back afterwards to publish the apex A record (phase 2). Recreating the Ingress yields a
+# new IP, which the lab's two-phase flow re-publishes.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "hello.fullname" . }}
+  labels:
+    {{- include "hello.labels" . | nindent 4 }}
+  annotations:
+    kubernetes.io/ingress.class: "gce"
+    networking.gke.io/managed-certificates: {{ include "hello.fullname" . | quote }}
+    networking.gke.io/v1beta1.FrontendConfig: {{ include "hello.fullname" . | quote }}
+spec:
+  defaultBackend:
+    service:
+      name: {{ include "hello.fullname" . }}
+      port:
+        number: {{ .Values.service.port }}

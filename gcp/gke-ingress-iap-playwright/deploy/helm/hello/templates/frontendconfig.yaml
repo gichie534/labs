@@ -1,0 +1,13 @@
+# Redirect plain HTTP to HTTPS at the load balancer. Attached to the Ingress via the
+# networking.gke.io/v1beta1.FrontendConfig annotation. Without this the LB would also serve the app
+# over :80; the 301 keeps everything on TLS.
+apiVersion: networking.gke.io/v1beta1
+kind: FrontendConfig
+metadata:
+  name: {{ include "hello.fullname" . }}
+  labels:
+    {{- include "hello.labels" . | nindent 4 }}
+spec:
+  redirectToHttps:
+    enabled: true
+    responseCodeName: MOVED_PERMANENTLY_DEFAULT

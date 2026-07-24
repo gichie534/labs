@@ -1,0 +1,24 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "hello.fullname" . }}
+  labels:
+    {{- include "hello.labels" . | nindent 4 }}
+  annotations:
+    # Container-native load balancing: route the external Application Load Balancer straight to Pod
+    # IPs via a standalone NEG, instead of through kube-proxy/NodePort. This is the GKE production
+    # default on VPC-native clusters (Autopilot is always VPC-native) and is what GKE Ingress
+    # consumes when the Service is ClusterIP.
+    cloud.google.com/neg: '{"ingress": true}'
+    # Attach the BackendConfig that enables IAP on this Service's backend. Defaulting all ports to it
+    # turns IAP on for the whole Service.
+    cloud.google.com/backend-config: '{"default": "{{ include "hello.fullname" . }}"}'
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "hello.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ .Values.service.port }}
+      targetPort: http
+      protocol: TCP

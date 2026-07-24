@@ -1,0 +1,18 @@
+# Turns IAP ON for the backend service that GKE Ingress creates for this app. Attached to the
+# Service via the cloud.google.com/backend-config annotation; the GKE Ingress controller reads it
+# and configures Identity-Aware Proxy on the external Application Load Balancer's backend.
+#
+# This uses the GOOGLE-MANAGED OAuth client (no oauthclientCredentials / Kubernetes Secret): just
+# `enabled: true`. It authenticates Google identities inside the organization out of the box, and is
+# the supported path now that the IAP OAuth Admin APIs (custom brand/client provisioning) have been
+# shut down. WHO may pass through the gate is controlled separately by roles/iap.httpsResourceAccessor
+# grants (the infra/iap-access unit), not here.
+apiVersion: cloud.google.com/v1
+kind: BackendConfig
+metadata:
+  name: {{ include "hello.fullname" . }}
+  labels:
+    {{- include "hello.labels" . | nindent 4 }}
+spec:
+  iap:
+    enabled: true

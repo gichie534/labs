@@ -1,0 +1,255 @@
+version: '3'
+
+# Lifecycle for the gcp/gke-ingress-iap-playwright lab.
+#
+# Same IAP-protected GKE Ingress as gcp/gke-ingress-iap (Go "hello world" on GKE Autopilot, classic
+# GKE Ingress + Google-managed TLS cert + HTTP->HTTPS redirect + a BackendConfig with iap.enabled:
+# true using the Google-managed OAuth client), but the verification path is PLAYWRIGHT end-to-end
+# tests that authenticate THROUGH IAP.
+#
+# How Playwright gets through IAP: neither a human nor a bare WIF principal can mint a programmatic
+# IAP token with the Google-managed client — a SERVICE ACCOUNT can, via a self-signed JWT whose
+# audience is the resource URL. The `test-e2e` task signs that JWT as the test SA (impersonation,
+# no exported key) and passes it to Playwright, which injects it as an `Authorization: Bearer`
+# header on every request (see tests/e2e/playwright.config.ts).
+#
+# Two-phase HTTPS (ephemeral LB IP + load-balancer-authorized cert):
+#   1. up      -> infra + the delegated public child zone (no A record yet) + IAP access grants and
+#                 the Playwright test service account (which CI may impersonate).
+#   2. deploy  -> install the app + Ingress + ManagedCertificate + BackendConfig (LB allocates an
+#                 ephemeral IP; IAP is enabled on its backend).
+#   3. dns     -> read the Ingress IP and publish the apex A record (re-apply the dns unit).
+#   4. verify  -> wait for the cert to go Active, then run the Playwright IAP tests (negative +
+#                 positive).
+# `task gke-iap-pw:all` runs deploy->dns->verify in order after `up`.
+#
+# Only `up`, `deploy`, and `dns` create/modify cloud resources. fmt/validate/plan are cost-free.
+#
+# CONFIG: lab inputs (GCP_PROJECT, GCP_REGION, INGRESS_DOMAIN, PARENT_DNS_*, IAP_MEMBER, etc.) are
+# loaded from a local `.env` file via Task's built-in dotenv. Copy `.env.example` to `.env` and fill
+# it in; `.env` is gitignored. Values exported in your shell still win, and Terragrunt's root.hcl
+# picks them up through get_env(...). A missing `.env` is harmless (cost-free tasks still run).
+#
+# A global top-level `dotenv:` is rejected in a Taskfile that another Taskfile `include`s (the root
+# labs/Taskfile.yml includes this one), so `.env` is declared per-task. NOTE the path nuance: dotenv
+# resolves relative to the task's working dir, so tasks that set `dir: infra` load `['../.env']`
+# (the lab root) while the rest load `['.env']`.
+
+vars:
+  APP_DIR: app/go
+  CHART_DIR: deploy/helm/hello
+  E2E_DIR: tests/e2e
+  IMAGE_NAME: hello
+  RELEASE: hello
+  NAMESPACE: hello
+  CLUSTER: gke-ingress-iap-pw
+  REPO: gke-ingress-iap-pw
+  TEST_SA_ID: playwright-iap-tester
+
+tasks:
+  default:
+    cmds: [task --list]
+    silent: true
+
+  init-env:
+    desc: Create a local .env from the template (no-op if .env already exists, so it never clobbers your values)
+    cmds:
+      - |
+        if [ -f .env ]; then
+          echo ".env already exists — leaving it untouched."
+        else
+          cp .env.example .env
+          echo "Created .env from .env.example — fill in your values."
+        fi
+
+  init-state:
+    desc: Create the GCS bucket for Terraform/Terragrunt remote state (idempotent; run once before `up`)
+    dotenv: ['.env']
+    cmds:
+      - |
+        : "${GCP_PROJECT:?set GCP_PROJECT=<project id>}"
+        : "${TF_STATE_BUCKET:?set TF_STATE_BUCKET=<bucket name (no gs:// prefix)>}"
+        LOCATION="${GCP_REGION:-us-central1}"
+        if gcloud storage buckets describe "gs://$TF_STATE_BUCKET" --project "$GCP_PROJECT" >/dev/null 2>&1; then
+          echo "Bucket gs://$TF_STATE_BUCKET already exists — nothing to do."
+        else
+          echo "Creating gs://$TF_STATE_BUCKET in $LOCATION..."
+          gcloud storage buckets create "gs://$TF_STATE_BUCKET" \
+            --project "$GCP_PROJECT" \
+            --location "$LOCATION" \
+            --uniform-bucket-level-access \
+            --public-access-prevention
+        fi
+        # Versioning protects state against accidental corruption/overwrite.
+        gcloud storage buckets update "gs://$TF_STATE_BUCKET" --versioning
+
+  fmt:
+    desc: Format Terragrunt HCL and Go
+    cmds:
+      - terragrunt hcl format
+      - gofmt -w ./app/go
+
+  validate:
+    desc: Validate every infra unit (cost-free)
+    dir: infra
+    dotenv: ['../.env']
+    cmds: [terragrunt run --all validate]
+
+  lint:
+    desc: Lint Terraform/Terragrunt and the Helm chart
+    cmds:
+      - tflint --recursive
+      - helm lint {{.CHART_DIR}} --set domain=placeholder.example.com --set image.repository=example/hello --set image.tag=dev
+
+  plan:
+    desc: Plan all infra units (cost-free)
+    dir: infra
+    dotenv: ['../.env']
+    cmds: [terragrunt run --all plan]
+
+  up:
+    desc: Provision infra — VPC, Autopilot cluster, registry, CI identity, the delegated public DNS zone, IAP access, and the Playwright test SA (creates cloud resources)
+    dir: infra
+    dotenv: ['../.env']
+    cmds: [terragrunt run --all apply --non-interactive]
+
+  build:
+    desc: Build the Go app image locally (linux/amd64 to match GKE nodes)
+    cmds:
+      - docker build --platform linux/amd64 -t {{.IMAGE_NAME}}:dev {{.APP_DIR}}
+
+  push:
+    desc: Tag the local hello:dev image for Artifact Registry and push it (mirrors CI)
+    deps: [build]
+    dotenv: ['.env']
+    cmds:
+      - |
+        : "${GCP_PROJECT:?set GCP_PROJECT=<project id>}"
+        : "${GCP_REGION:?set GCP_REGION=<region>}"
+        REGISTRY="$GCP_REGION-docker.pkg.dev/$GCP_PROJECT/{{.REPO}}"
+        gcloud auth configure-docker "$GCP_REGION-docker.pkg.dev" --quiet
+        docker tag {{.IMAGE_NAME}}:dev "$REGISTRY/{{.IMAGE_NAME}}:dev"
+        docker push "$REGISTRY/{{.IMAGE_NAME}}:dev"
+        echo "Pushed $REGISTRY/{{.IMAGE_NAME}}:dev"
+
+  creds:
+    desc: Fetch kube-context for the cluster
+    dotenv: ['.env']
+    cmds:
+      - gcloud container clusters get-credentials {{.CLUSTER}} --region "$GCP_REGION"
+
+  deploy:
+    desc: Deploy the chart to the current kube-context with Helm (requires an image already pushed)
+    dotenv: ['.env']
+    vars:
+      TAG: '{{.TAG | default "dev"}}'
+    cmds:
+      - |
+        : "${GCP_PROJECT:?set GCP_PROJECT=<project id>}"
+        : "${GCP_REGION:?set GCP_REGION=<region>}"
+        : "${INGRESS_DOMAIN:?set INGRESS_DOMAIN=<the public hostname>}"
+        REGISTRY="$GCP_REGION-docker.pkg.dev/$GCP_PROJECT/{{.REPO}}"
+        helm upgrade --install {{.RELEASE}} {{.CHART_DIR}} \
+          --namespace {{.NAMESPACE}} --create-namespace \
+          --set image.repository="$REGISTRY/{{.IMAGE_NAME}}" \
+          --set image.tag="{{.TAG}}" \
+          --set domain="$INGRESS_DOMAIN" \
+          --wait --timeout 3m
+
+  dns:
+    desc: Publish the apex A record by reading the deployed Ingress IP, then re-applying the dns unit (phase 2)
+    dotenv: ['.env']
+    cmds:
+      - |
+        : "${INGRESS_DOMAIN:?set INGRESS_DOMAIN=<the public hostname>}"
+        echo "Waiting for the Ingress to be assigned a load-balancer IP..."
+        for i in $(seq 1 60); do
+          IP=$(kubectl -n {{.NAMESPACE}} get ingress {{.RELEASE}}-{{.IMAGE_NAME}} \
+            -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || true)
+          [ -n "$IP" ] && break
+          sleep 10
+        done
+        : "${IP:?the Ingress never reported a load-balancer IP — is it deployed? (task gke-iap-pw:deploy)}"
+        echo "Ingress IP: $IP — publishing apex A record for $INGRESS_DOMAIN"
+        (cd infra/dns && INGRESS_IP="$IP" terragrunt apply --non-interactive)
+
+  wait-cert:
+    internal: true
+    dotenv: ['.env']
+    cmds:
+      - |
+        echo "Waiting for the ManagedCertificate to become Active (can take 10-20m on first issue)..."
+        for i in $(seq 1 120); do
+          STATUS=$(kubectl -n {{.NAMESPACE}} get managedcertificate {{.RELEASE}}-{{.IMAGE_NAME}} \
+            -o jsonpath='{.status.certificateStatus}' 2>/dev/null || true)
+          echo "  cert status: ${STATUS:-<pending>}"
+          [ "$STATUS" = "Active" ] && break
+          sleep 15
+        done
+
+  test-e2e:
+    desc: "Run the Playwright IAP tests (negative + positive) against the live endpoint. Mints the IAP JWT by impersonating the test SA (no exported key)."
+    dotenv: ['.env']
+    cmds:
+      - |
+        : "${GCP_PROJECT:?set GCP_PROJECT=<project id>}"
+        : "${INGRESS_DOMAIN:?set INGRESS_DOMAIN=<the public hostname>}"
+        SA="{{.TEST_SA_ID}}@${GCP_PROJECT}.iam.gserviceaccount.com"
+        URL="https://$INGRESS_DOMAIN/"
+        echo "Signing an IAP JWT as $SA (audience=$URL)..."
+        NOW=$(date +%s)
+        cat > /tmp/iap-pw-claim.json <<EOF
+        { "iss": "$SA", "sub": "$SA", "aud": "$URL", "iat": $NOW, "exp": $((NOW + 3600)) }
+        EOF
+        # Sign the JWT via the IAM Credentials API (no key material touches disk); requires
+        # roles/iam.serviceAccountTokenCreator on the SA, granted to the operator in infra/iap-sa.
+        gcloud iam service-accounts sign-jwt --iam-account="$SA" /tmp/iap-pw-claim.json /tmp/iap-pw.jwt
+        export IAP_JWT="$(cat /tmp/iap-pw.jwt)"
+        rm -f /tmp/iap-pw-claim.json /tmp/iap-pw.jwt
+        cd {{.E2E_DIR}}
+        npm ci
+        npx playwright install --with-deps chromium
+        INGRESS_DOMAIN="$INGRESS_DOMAIN" IAP_JWT="$IAP_JWT" npx playwright test
+
+  verify:
+    desc: Wait for the managed cert, then run the Playwright IAP tests (negative + positive)
+    cmds:
+      - task: wait-cert
+      - task: test-e2e
+
+  all:
+    desc: After `up`, run the full app path — build is done in CI; locally chains deploy -> dns -> verify
+    cmds:
+      - task: deploy
+      - task: dns
+      - task: verify
+
+  ci-config:
+    desc: Print the WIF provider name to set as a GitHub Actions variable
+    dir: infra
+    dotenv: ['../.env']
+    cmds:
+      - |
+        # Capture the value first (drop Terragrunt's stderr logs), then print the full line so the
+        # key and value aren't split by interleaved log output.
+        PROVIDER=$(cd deployer-wif && terragrunt output -json provider_names 2>/dev/null | jq -r '.github')
+        echo "Set this as a GitHub Actions repository variable:"
+        echo "WIF_PROVIDER=$PROVIDER"
+
+  test:
+    desc: Run the Go app tests; validate + plan as a cheap infra smoke test
+    cmds:
+      - task: test-app
+      - task: validate
+
+  test-app:
+    internal: true
+    dir: app/go
+    cmds: [go test ./...]
+
+  down:
+    desc: Destroy all infra (delete the Helm release first so the LB/Ingress is removed cleanly)
+    dotenv: ['.env']
+    cmds:
+      - helm uninstall {{.RELEASE}} --namespace {{.NAMESPACE}} --ignore-not-found --wait || true
+      - cd infra && terragrunt run --all destroy --non-interactive

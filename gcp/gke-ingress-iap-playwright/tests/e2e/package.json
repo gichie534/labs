@@ -1,0 +1,12 @@
+{
+  "name": "gke-ingress-iap-playwright-e2e",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Playwright end-to-end tests that verify IAP enforcement on the lab's GKE Ingress endpoint.",
+  "scripts": {
+    "test": "playwright test"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.48.0"
+  }
+}
