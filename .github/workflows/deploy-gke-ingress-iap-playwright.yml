@@ -1,0 +1,146 @@
+# Build the Go "hello world" image, push it to Artifact Registry, deploy it to the GKE Autopilot
+# cluster with Helm (classic Ingress + Google-managed TLS cert + IAP), then run PLAYWRIGHT end-to-end
+# tests that verify IAP both BLOCKS an unauthenticated request AND ADMITS an authenticated one — all
+# keyless via Workload Identity Federation (no SA key).
+#
+# Required repository variables (Settings > Secrets and variables > Actions > Variables):
+#   GCP_PROJECT       e.g. my-project
+#   GCP_REGION        e.g. us-central1
+#   GKE_CLUSTER       gke-ingress-iap-pw
+#   ARTIFACT_REPO     gke-ingress-iap-pw
+#   INGRESS_DOMAIN    the public hostname, e.g. gke-iap-pw.gcp.example.com
+#   WIF_PROVIDER      full provider resource name from `task gke-iap-pw:ci-config`
+#                     (projects/<num>/locations/global/workloadIdentityPools/github-ci-gke-iap-pw/providers/github)
+#
+# Auth is DIRECT Workload Identity Federation — CI acts as the federated principal itself, with no
+# service account to impersonate for the deploy and no JSON key.
+#
+# For the POSITIVE Playwright test, CI signs a self-signed JWT AS the Playwright test service account
+# (audience = the resource URL) and Playwright injects it as an Authorization: Bearer header. This
+# requires roles/iam.serviceAccountTokenCreator on that SA, granted to the CI federated principalSet
+# in infra/iap-sa. This is the deliberate difference from the reference gcp/gke-ingress-iap lab,
+# where CI ran only the credential-free negative test. See docs/adr/0001.
+#
+# SCOPE: this workflow is the steady-state APP loop. It assumes the infrastructure, the public DNS
+# A record, and the IAP access grants were stood up once by the operator via the Taskfile
+# (`task gke-iap-pw:up` then `task gke-iap-pw:all`). The Ingress and its ephemeral LB IP persist
+# across these helm upgrades, so the A record and managed certificate stay valid; CI just ships new
+# image versions and re-checks IAP with Playwright.
+#
+# This workflow lives inside the lab folder. To run it from the repo root, move/symlink it to the
+# repository's top-level .github/workflows/ or trigger it manually.
+
+name: deploy-gke-ingress-iap-playwright
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "gcp/gke-ingress-iap-playwright/app/go/**"
+      - "gcp/gke-ingress-iap-playwright/deploy/helm/**"
+      - "gcp/gke-ingress-iap-playwright/tests/e2e/**"
+      - "gcp/gke-ingress-iap-playwright/.github/workflows/deploy.yml"
+
+permissions:
+  contents: read
+  id-token: write # required for GitHub to mint the OIDC token used by WIF
+
+env:
+  APP_DIR: gcp/gke-ingress-iap-playwright/app/go
+  CHART_DIR: gcp/gke-ingress-iap-playwright/deploy/helm/hello
+  E2E_DIR: gcp/gke-ingress-iap-playwright/tests/e2e
+  IMAGE_NAME: hello
+  RELEASE: hello
+  NAMESPACE: hello
+  TEST_SA_ID: playwright-iap-tester
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Authenticate to Google Cloud (keyless, direct WIF)
+        id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          project_id: ${{ vars.GCP_PROJECT }}
+          workload_identity_provider: ${{ vars.WIF_PROVIDER }}
+
+      - name: Set up gcloud
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure Docker for Artifact Registry
+        run: gcloud auth configure-docker ${{ vars.GCP_REGION }}-docker.pkg.dev --quiet
+
+      - name: Build and push image
+        env:
+          REGISTRY: ${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT }}/${{ vars.ARTIFACT_REPO }}
+        run: |
+          IMAGE="$REGISTRY/$IMAGE_NAME:${GITHUB_SHA::12}"
+          echo "IMAGE=$IMAGE" >> "$GITHUB_ENV"
+          docker build -t "$IMAGE" "$APP_DIR"
+          docker push "$IMAGE"
+
+      - name: Get cluster credentials
+        uses: google-github-actions/get-gke-credentials@v2
+        with:
+          cluster_name: ${{ vars.GKE_CLUSTER }}
+          location: ${{ vars.GCP_REGION }}
+
+      - name: Deploy with Helm
+        env:
+          REGISTRY: ${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT }}/${{ vars.ARTIFACT_REPO }}
+        run: |
+          helm upgrade --install "$RELEASE" "$CHART_DIR" \
+            --namespace "$NAMESPACE" --create-namespace \
+            --set image.repository="$REGISTRY/$IMAGE_NAME" \
+            --set image.tag="${GITHUB_SHA::12}" \
+            --set domain="${{ vars.INGRESS_DOMAIN }}" \
+            --atomic \
+            --wait --timeout 10m
+
+      - name: Mint IAP JWT (impersonate the Playwright test SA)
+        env:
+          INGRESS_DOMAIN: ${{ vars.INGRESS_DOMAIN }}
+        run: |
+          SA="$TEST_SA_ID@${{ vars.GCP_PROJECT }}.iam.gserviceaccount.com"
+          URL="https://$INGRESS_DOMAIN/"
+          NOW=$(date +%s)
+          cat > /tmp/iap-pw-claim.json <<EOF
+          { "iss": "$SA", "sub": "$SA", "aud": "$URL", "iat": $NOW, "exp": $((NOW + 3600)) }
+          EOF
+          # Signed via the IAM Credentials API using CI's federated identity (needs Token Creator on
+          # the SA, granted in infra/iap-sa). No key material is exported.
+          gcloud iam service-accounts sign-jwt --iam-account="$SA" /tmp/iap-pw-claim.json /tmp/iap-pw.jwt
+          JWT="$(cat /tmp/iap-pw.jwt)"
+          rm -f /tmp/iap-pw-claim.json /tmp/iap-pw.jwt
+          echo "::add-mask::$JWT"
+          echo "IAP_JWT=$JWT" >> "$GITHUB_ENV"
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install Playwright
+        working-directory: ${{ env.E2E_DIR }}
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+
+      - name: Run Playwright IAP tests (negative + positive)
+        working-directory: ${{ env.E2E_DIR }}
+        env:
+          INGRESS_DOMAIN: ${{ vars.INGRESS_DOMAIN }}
+          IAP_JWT: ${{ env.IAP_JWT }}
+        run: npx playwright test
+
+      - name: Upload Playwright report
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: ${{ env.E2E_DIR }}/playwright-report
+          retention-days: 7
