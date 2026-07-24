@@ -78,8 +78,12 @@ jobs:
         env:
           REGISTRY: ${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT }}/${{ vars.ARTIFACT_REPO }}
         run: |
-          IMAGE="$REGISTRY/$IMAGE_NAME:${GITHUB_SHA::12}"
-          echo "IMAGE=$IMAGE" >> "$GITHUB_ENV"
+          # Unique per run (commit SHA for traceability + run number/attempt for uniqueness) so
+          # re-running the workflow on the same commit doesn't try to overwrite an existing tag —
+          # the Artifact Registry repo has tag immutability enabled.
+          IMAGE_TAG="${GITHUB_SHA::12}-${GITHUB_RUN_NUMBER}.${GITHUB_RUN_ATTEMPT}"
+          echo "IMAGE_TAG=$IMAGE_TAG" >> "$GITHUB_ENV"
+          IMAGE="$REGISTRY/$IMAGE_NAME:$IMAGE_TAG"
           docker build -t "$IMAGE" "$APP_DIR"
           docker push "$IMAGE"
 
@@ -96,7 +100,7 @@ jobs:
           helm upgrade --install "$RELEASE" "$CHART_DIR" \
             --namespace "$NAMESPACE" --create-namespace \
             --set image.repository="$REGISTRY/$IMAGE_NAME" \
-            --set image.tag="${GITHUB_SHA::12}" \
+            --set image.tag="$IMAGE_TAG" \
             --set domain="${{ vars.INGRESS_DOMAIN }}" \
             --atomic \
             --wait --timeout 10m
