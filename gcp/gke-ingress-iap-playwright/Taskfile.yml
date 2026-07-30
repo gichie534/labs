@@ -171,7 +171,7 @@ tasks:
         done
         : "${IP:?the Ingress never reported a load-balancer IP — is it deployed? (task gke-iap-pw:deploy)}"
         echo "Ingress IP: $IP — publishing apex A record for $INGRESS_DOMAIN"
-        (cd infra/dns && INGRESS_IP="$IP" terragrunt apply --non-interactive)
+        (cd infra/dns && INGRESS_IP="$IP" terragrunt apply -auto-approve --non-interactive)
 
   wait-cert:
     internal: true

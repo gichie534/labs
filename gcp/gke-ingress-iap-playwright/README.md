@@ -137,7 +137,7 @@ task gke-iap-pw:ci-config
 ```
 
 Set repository **Variables**: `GCP_PROJECT`, `GCP_REGION`, `GKE_CLUSTER=gke-ingress-iap-pw`,
-`ARTIFACT_REPO=gke-ingress-iap-pw`, `INGRESS_DOMAIN`, and `WIF_PROVIDER`. The workflow in
+`ARTIFACT_REPO=gke-ingress-iap-pw`, `INGRESS_DOMAIN`, and `**WIF_PROVIDER**`. The workflow in
 `.github/workflows/deploy.yml` builds, pushes, `helm upgrade --install`s, then mints the IAP JWT and
 runs the **negative + positive** Playwright tests on push to `main` (or manual dispatch). The
 workflow file lives inside the lab; to have GitHub run it, move or symlink it to the repository's
