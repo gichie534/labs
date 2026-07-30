@@ -45,15 +45,24 @@ deployer or the pod — granting only the deployer leaves pods stuck in `ImagePu
 - `terraform`, `terragrunt` (pinned via tenv), `gcloud`, `helm`, `go`, and Task installed.
 - The four module tags above published in `gichie534/infrastructure-catalog`.
 
-Set these before running (the lab reads them via env, with placeholders otherwise):
+Config lives in a local `.env` file (loaded automatically by the Taskfile via dotenv; `.env` is
+gitignored). Create it from the template and fill in your values:
 
 ```bash
-export GCP_PROJECT=my-project
-export GCP_REGION=us-central1
-export GCP_PROJECT_NUMBER=123456789012     # for the GKE node SA that pulls images
-export GITHUB_REPOSITORY=owner/repo        # repo allowed to federate into the WIF pool
-export TF_STATE_BUCKET=my-tf-state-bucket
+task gke-helm:init-env      # copies .env.example -> .env (no-op if .env exists)
+$EDITOR .env
 ```
+
+```dotenv
+GCP_PROJECT=my-project
+GCP_REGION=us-central1
+GCP_PROJECT_NUMBER=123456789012     # for the GKE node SA that pulls images
+GITHUB_REPOSITORY=owner/repo        # repo allowed to federate into the WIF pool
+TF_STATE_BUCKET=my-tf-state-bucket
+```
+
+Values already exported in your shell take precedence, and Terragrunt's `root.hcl` picks them up
+through `get_env(...)`.
 
 > `GCP_PROJECT_NUMBER` is the project *number*, not the ID. Get it with:
 > `gcloud projects describe "$GCP_PROJECT" --format='value(projectNumber)'`
@@ -61,6 +70,7 @@ export TF_STATE_BUCKET=my-tf-state-bucket
 ## Stand it up
 
 ```bash
+task gke-helm:init-state    # create the GCS state bucket (idempotent; run once)
 task gke-helm:validate      # cost-free
 task gke-helm:plan          # cost-free
 task gke-helm:up            # creates the VPC, Autopilot cluster, registry, and CI identity
@@ -85,9 +95,9 @@ with **direct WIF**.
 ## Local deploy (optional)
 
 ```bash
-task gke-helm:build
-gcloud container clusters get-credentials gke-autopilot-helm --region "$GCP_REGION"
-REGISTRY="$GCP_REGION-docker.pkg.dev/$GCP_PROJECT/gke-autopilot-helm" TAG=dev task gke-helm:deploy
+task gke-helm:push          # build + push hello:dev to Artifact Registry (derives the registry from .env)
+task gke-helm:creds         # fetch kube-context for the cluster
+task gke-helm:deploy        # helm upgrade --install (TAG=dev by default; override with TAG=... task gke-helm:deploy)
 kubectl -n hello get svc hello   # grab the LoadBalancer external IP, then curl it
 ```
 

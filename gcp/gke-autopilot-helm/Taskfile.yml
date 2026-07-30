@@ -7,6 +7,17 @@ version: '3'
 # the `build`/`deploy` tasks here mirror that flow for local iteration.
 #
 # Only `up` and `deploy` create cloud resources. fmt/validate/plan are cost-free.
+#
+# CONFIG: lab inputs (GCP_PROJECT, GCP_REGION, GCP_PROJECT_NUMBER, TF_STATE_BUCKET,
+# GITHUB_REPOSITORY) are loaded from a local `.env` file via Task's built-in dotenv. Copy
+# `.env.example` to `.env` and fill it in; `.env` is gitignored. Values exported in your shell still
+# win, and Terragrunt's root.hcl picks them up through get_env(...). A missing `.env` is harmless
+# (cost-free tasks still run).
+#
+# A global top-level `dotenv:` is rejected in a Taskfile that another Taskfile `include`s (the root
+# labs/Taskfile.yml includes this one), so `.env` is declared per-task. NOTE the path nuance: dotenv
+# resolves relative to the task's working dir, so tasks that set `dir: infra` load `['../.env']`
+# (the lab root) while the rest load `['.env']`.
 
 vars:
   APP_DIR: app/go
@@ -14,11 +25,45 @@ vars:
   IMAGE_NAME: hello
   RELEASE: hello
   NAMESPACE: hello
+  CLUSTER: gke-autopilot-helm
+  REPO: gke-autopilot-helm
 
 tasks:
   default:
     cmds: [task --list]
     silent: true
+
+  init-env:
+    desc: Create a local .env from the template (no-op if .env already exists, so it never clobbers your values)
+    cmds:
+      - |
+        if [ -f .env ]; then
+          echo ".env already exists — leaving it untouched."
+        else
+          cp .env.example .env
+          echo "Created .env from .env.example — fill in your values."
+        fi
+
+  init-state:
+    desc: Create the GCS bucket for Terraform/Terragrunt remote state (idempotent; run once before `up`)
+    dotenv: ['.env']
+    cmds:
+      - |
+        : "${GCP_PROJECT:?set GCP_PROJECT=<project id>}"
+        : "${TF_STATE_BUCKET:?set TF_STATE_BUCKET=<bucket name (no gs:// prefix)>}"
+        LOCATION="${GCP_REGION:-us-central1}"
+        if gcloud storage buckets describe "gs://$TF_STATE_BUCKET" --project "$GCP_PROJECT" >/dev/null 2>&1; then
+          echo "Bucket gs://$TF_STATE_BUCKET already exists — nothing to do."
+        else
+          echo "Creating gs://$TF_STATE_BUCKET in $LOCATION..."
+          gcloud storage buckets create "gs://$TF_STATE_BUCKET" \
+            --project "$GCP_PROJECT" \
+            --location "$LOCATION" \
+            --uniform-bucket-level-access \
+            --public-access-prevention
+        fi
+        # Versioning protects state against accidental corruption/overwrite.
+        gcloud storage buckets update "gs://$TF_STATE_BUCKET" --versioning
 
   fmt:
     desc: Format Terragrunt HCL and Go
@@ -29,6 +74,7 @@ tasks:
   validate:
     desc: Validate every infra unit (cost-free)
     dir: infra
+    dotenv: ['../.env']
     cmds: [terragrunt run --all validate]
 
   lint:
@@ -40,33 +86,60 @@ tasks:
   plan:
     desc: Plan all infra units (cost-free)
     dir: infra
+    dotenv: ['../.env']
     cmds: [terragrunt run --all plan]
 
   up:
     desc: Provision infra — VPC, Autopilot cluster, registry, CI identity (creates cloud resources)
     dir: infra
+    dotenv: ['../.env']
     cmds: [terragrunt run --all apply --non-interactive]
 
   build:
-    desc: Build the Go app image locally
+    desc: Build the Go app image locally (linux/amd64 to match GKE nodes)
     cmds:
-      - docker build -t {{.IMAGE_NAME}}:dev {{.APP_DIR}}
+      - docker build --platform linux/amd64 -t {{.IMAGE_NAME}}:dev {{.APP_DIR}}
+
+  push:
+    desc: Tag the local hello:dev image for Artifact Registry and push it (mirrors CI)
+    deps: [build]
+    dotenv: ['.env']
+    cmds:
+      - |
+        : "${GCP_PROJECT:?set GCP_PROJECT=<project id>}"
+        : "${GCP_REGION:?set GCP_REGION=<region>}"
+        REGISTRY="$GCP_REGION-docker.pkg.dev/$GCP_PROJECT/{{.REPO}}"
+        gcloud auth configure-docker "$GCP_REGION-docker.pkg.dev" --quiet
+        docker tag {{.IMAGE_NAME}}:dev "$REGISTRY/{{.IMAGE_NAME}}:dev"
+        docker push "$REGISTRY/{{.IMAGE_NAME}}:dev"
+        echo "Pushed $REGISTRY/{{.IMAGE_NAME}}:dev"
+
+  creds:
+    desc: Fetch kube-context for the cluster
+    dotenv: ['.env']
+    cmds:
+      - gcloud container clusters get-credentials {{.CLUSTER}} --region "$GCP_REGION"
 
   deploy:
     desc: Deploy the chart to the current kube-context with Helm (requires an image already pushed)
+    dotenv: ['.env']
+    vars:
+      TAG: '{{.TAG | default "dev"}}'
     cmds:
       - |
-        : "${REGISTRY:?set REGISTRY=<region>-docker.pkg.dev/<project>/<repo>}"
-        : "${TAG:?set TAG=<image tag>}"
+        : "${GCP_PROJECT:?set GCP_PROJECT=<project id>}"
+        : "${GCP_REGION:?set GCP_REGION=<region>}"
+        REGISTRY="$GCP_REGION-docker.pkg.dev/$GCP_PROJECT/{{.REPO}}"
         helm upgrade --install {{.RELEASE}} {{.CHART_DIR}} \
           --namespace {{.NAMESPACE}} --create-namespace \
           --set image.repository="$REGISTRY/{{.IMAGE_NAME}}" \
-          --set image.tag="$TAG" \
+          --set image.tag="{{.TAG}}" \
           --wait --timeout 5m
 
   ci-config:
     desc: Print the WIF provider name to set as a GitHub Actions variable
     dir: infra
+    dotenv: ['../.env']
     cmds:
       - |
         echo "Set this as a GitHub Actions repository variable:"
@@ -79,6 +152,8 @@ tasks:
       - task: validate
 
   down:
-    desc: Destroy all infra
-    dir: infra
-    cmds: [terragrunt run --all destroy --non-interactive]
+    desc: Destroy all infra (delete the Helm release first so resources are removed cleanly)
+    dotenv: ['.env']
+    cmds:
+      - helm uninstall {{.RELEASE}} --namespace {{.NAMESPACE}} --ignore-not-found --wait || true
+      - cd infra && terragrunt run --all destroy --non-interactive
