@@ -1,0 +1,93 @@
+version: '3'
+
+# Lifecycle for the gcp/shared-vpc-gke lab.
+#
+# Infra is Terragrunt laid out as a GCP org hierarchy (directory = node) under root-folder/,
+# composed by dependency blocks — the same style as the organization-layout-terragrunt lab, so
+# tasks run from the lab root (not an infra/ dir). There is no app, so build/deploy are omitted.
+#
+# Only `up` creates cloud resources. fmt / validate / plan are cost-free.
+#
+# CONFIG: lab inputs (org/billing, region, project IDs, state bucket) are loaded from a local `.env`
+# via Task's built-in dotenv. Copy `.env.example` to `.env` (`task shared-vpc:init-env`) and fill it
+# in; `.env` is gitignored. Values exported in your shell still win, and root.hcl reads them through
+# get_env(...). A global top-level `dotenv:` is rejected in a Taskfile that another Taskfile
+# `include`s (the root labs/Taskfile.yml includes this one), so `.env` is declared per task. Tasks
+# run at the lab root, so the path is `.env`.
+
+tasks:
+  default:
+    cmds: [task --list]
+    silent: true
+
+  init-env:
+    desc: Create a local .env from the template (no-op if .env already exists, so it never clobbers your values)
+    cmds:
+      - |
+        if [ -f .env ]; then
+          echo ".env already exists — leaving it untouched."
+        else
+          cp .env.example .env
+          echo "Created .env from .env.example — fill in your values."
+        fi
+
+  init-state:
+    desc: Create the GCS bucket for Terraform/Terragrunt remote state (idempotent; run once before `up`)
+    dotenv: ['.env']
+    cmds:
+      - |
+        : "${TF_STATE_BUCKET:?set TF_STATE_BUCKET=<bucket name (no gs:// prefix)>}"
+        : "${TF_STATE_PROJECT:?set TF_STATE_PROJECT=<project that owns the state bucket>}"
+        LOCATION="${TF_STATE_LOCATION:-us-central1}"
+        if gcloud storage buckets describe "gs://$TF_STATE_BUCKET" --project "$TF_STATE_PROJECT" >/dev/null 2>&1; then
+          echo "Bucket gs://$TF_STATE_BUCKET already exists — nothing to do."
+        else
+          echo "Creating gs://$TF_STATE_BUCKET in $LOCATION..."
+          gcloud storage buckets create "gs://$TF_STATE_BUCKET" \
+            --project "$TF_STATE_PROJECT" \
+            --location "$LOCATION" \
+            --uniform-bucket-level-access \
+            --public-access-prevention
+        fi
+        # Versioning protects state against accidental corruption/overwrite.
+        gcloud storage buckets update "gs://$TF_STATE_BUCKET" --versioning
+
+  fmt:
+    desc: Format all Terragrunt HCL
+    cmds:
+      - terragrunt hcl format
+
+  validate:
+    desc: Validate every unit (cost-free)
+    dotenv: ['.env']
+    cmds:
+      - terragrunt run --all validate
+
+  lint:
+    desc: Lint Terraform/Terragrunt
+    cmds:
+      - tflint --recursive
+
+  plan:
+    desc: Plan the whole hierarchy (cost-free)
+    dotenv: ['.env']
+    cmds:
+      - terragrunt run --all plan
+
+  up:
+    desc: Provision the folder, both projects, the host VPC, the Shared VPC grants, and the Autopilot cluster (creates cloud resources)
+    dotenv: ['.env']
+    cmds:
+      - terragrunt run --all apply --non-interactive
+
+  test:
+    desc: Cheap smoke test — validate then plan (cost-free)
+    cmds:
+      - task: validate
+      - task: plan
+
+  down:
+    desc: Destroy everything
+    dotenv: ['.env']
+    cmds:
+      - terragrunt run --all destroy --non-interactive
