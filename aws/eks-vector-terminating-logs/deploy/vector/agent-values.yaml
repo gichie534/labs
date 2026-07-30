@@ -1,0 +1,27 @@
+# Vector AGENT — a DaemonSet on every node. It tails container logs from the node's filesystem
+# (/var/log/pods via the kubernetes_logs source) and forwards them to the aggregator over Vector's
+# native protocol. This is the component whose behaviour the lab interrogates: does it keep tailing
+# a pod's log file while that pod sits in Terminating?
+#
+# role: Agent => DaemonSet + the RBAC (ServiceAccount/ClusterRole) the kubernetes_logs source needs
+# to watch pod metadata. rbac.create is only honoured for the Agent role, and defaults to true.
+
+role: Agent
+fullnameOverride: vector-agent
+
+customConfig:
+  data_dir: /vector-data-dir
+  api:
+    enabled: true
+    address: 127.0.0.1:8686
+  sources:
+    # Tails every container log on the node and enriches each event with pod/namespace metadata
+    # discovered from the Kubernetes API.
+    k8s_logs:
+      type: kubernetes_logs
+  sinks:
+    # Ship everything to the aggregator's Vector source over the cluster-DNS service name.
+    to_aggregator:
+      type: vector
+      inputs: [k8s_logs]
+      address: vector-aggregator.vector.svc.cluster.local:6000

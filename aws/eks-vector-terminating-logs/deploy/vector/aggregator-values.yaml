@@ -1,0 +1,31 @@
+# Vector AGGREGATOR — the central collector the agents forward to. It receives events on a Vector
+# source and writes them to a console (stdout) sink, so the collected logs are visible with a plain
+# `kubectl logs` on the aggregator pod. That's deliberately the whole observability surface of this
+# lab: no CloudWatch, no S3, no IAM — just stdout you can grep.
+#
+# role: Stateless-Aggregator => a Deployment backed by emptyDir (NOT a StatefulSet with a PVC), so
+# there is no dependency on the EBS CSI driver / a StorageClass. Fine here because we don't need
+# disk buffering to prove the hypothesis.
+
+role: Stateless-Aggregator
+fullnameOverride: vector-aggregator
+replicas: 1
+
+customConfig:
+  data_dir: /vector-data-dir
+  api:
+    enabled: true
+    address: 0.0.0.0:8686
+  sources:
+    # Receives events from the agents. The chart auto-detects this address and exposes port 6000
+    # on the vector-aggregator Service, which is what the agents dial.
+    from_agents:
+      type: vector
+      address: 0.0.0.0:6000
+  sinks:
+    # Emit every received event as JSON to stdout — read it with `kubectl -n vector logs`.
+    stdout:
+      type: console
+      inputs: [from_agents]
+      encoding:
+        codec: json

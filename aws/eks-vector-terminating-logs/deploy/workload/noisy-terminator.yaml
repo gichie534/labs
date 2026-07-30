@@ -1,0 +1,57 @@
+# The subject of the experiment: a pod that logs continuously AND refuses to die quickly, so it
+# spends a long time in the Terminating state while still writing to its log file.
+#
+# How it lingers in Terminating:
+#   - It traps SIGTERM and does NOT exit — it just flips a flag and keeps logging.
+#   - terminationGracePeriodSeconds is 3600, so after `kubectl delete` the kubelet sends SIGTERM,
+#     waits a full hour for a graceful exit that never comes, and only then SIGKILLs the container.
+#   - For that whole hour the pod shows STATUS=Terminating while its container is alive and emitting
+#     a log line every 5s — first tagged phase=running, then phase=terminating once SIGTERM lands.
+#
+# The question the lab answers: do those phase=terminating lines reach the Vector aggregator, or
+# does collection stop the moment the pod is marked for deletion?
+#
+# Namespace is created by the deploy task (kubectl create namespace workload).
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: noisy-terminator
+  namespace: workload
+  labels:
+    app: noisy-terminator
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: noisy-terminator
+  template:
+    metadata:
+      labels:
+        app: noisy-terminator
+    spec:
+      # An hour of Terminating — plenty of time to observe. SIGKILL only fires if you wait it out.
+      terminationGracePeriodSeconds: 3600
+      containers:
+        - name: noisy
+          image: busybox:1.36
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              TERMINATING=0
+              # Catch SIGTERM but stay alive: flip the phase and keep logging.
+              trap 'TERMINATING=1; echo "[$(date -u +%FT%TZ)] SIGTERM received — ignoring, staying alive"' TERM
+              i=0
+              while true; do
+                i=$((i + 1))
+                if [ "$TERMINATING" = 1 ]; then phase=terminating; else phase=running; fi
+                echo "[$(date -u +%FT%TZ)] noisy-terminator line #${i} pod=${HOSTNAME} phase=${phase}"
+                sleep 5
+              done
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              cpu: 50m
+              memory: 32Mi

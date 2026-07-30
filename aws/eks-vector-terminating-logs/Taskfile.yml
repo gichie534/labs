@@ -1,0 +1,158 @@
+version: '3'
+
+# Lifecycle for the aws/eks-vector-terminating-logs lab.
+#
+# Infra is Terragrunt (network -> cluster). The in-cluster pieces (Vector agent + aggregator via the
+# official Helm chart, and the noisy-terminator workload) are installed by `deploy`. The experiment
+# is then run by hand with `terminate` + `logs` (see the README).
+#
+# Only `up` and `deploy` create/mutate cloud resources. fmt/validate/plan are cost-free.
+#
+# Env (loaded from .env via dotenv — see .env.example):
+#   AWS_REGION, TF_STATE_BUCKET   — required for real applies
+#   NODE_INSTANCE_TYPE            — worker size (default t3.medium)
+
+vars:
+  CLUSTER: eks-vec-logs
+  REGION: '{{.AWS_REGION | default "us-east-1"}}'
+  # Pinned Vector Helm chart version for reproducibility (chart 0.57.0 ships Vector 0.57.0).
+  VECTOR_CHART_VERSION: '0.57.0'
+  VECTOR_NS: vector
+  WORKLOAD_NS: workload
+
+tasks:
+  default:
+    cmds: [task --list]
+    silent: true
+
+  init-env:
+    desc: Create a local .env from the template (no-op if .env already exists)
+    cmds:
+      - |
+        if [ -f .env ]; then
+          echo ".env already exists — leaving it untouched."
+        else
+          cp .env.example .env
+          echo "Created .env from .env.example — fill in your values."
+        fi
+
+  fmt:
+    desc: Format Terragrunt HCL
+    cmds:
+      - terragrunt hcl format
+
+  validate:
+    desc: Validate every infra unit (cost-free)
+    dir: infra
+    dotenv: ['../.env']
+    cmds: [terragrunt run --all validate]
+
+  lint:
+    desc: Lint Terraform/Terragrunt and the Vector Helm values
+    cmds:
+      - tflint --recursive
+      - |
+        helm repo add vector https://helm.vector.dev >/dev/null 2>&1 || true
+        helm lint vector/vector --version {{.VECTOR_CHART_VERSION}} \
+          -f deploy/vector/aggregator-values.yaml
+        helm lint vector/vector --version {{.VECTOR_CHART_VERSION}} \
+          -f deploy/vector/agent-values.yaml
+
+  plan:
+    desc: Plan all infra units (cost-free)
+    dir: infra
+    dotenv: ['../.env']
+    cmds: [terragrunt run --all plan]
+
+  # --- State backend bootstrap (run once before the first validate/plan/up) -----------------------
+  state-bootstrap:
+    desc: 'Create the S3 state bucket (run once; needs TF_STATE_BUCKET + admin creds)'
+    dir: infra
+    dotenv: ['../.env']
+    cmds:
+      - terragrunt backend bootstrap --all --non-interactive
+
+  # --- Infra --------------------------------------------------------------------------------------
+  up:
+    desc: 'Provision VPC + EKS + a small node group (creates cloud resources)'
+    dir: infra
+    dotenv: ['../.env']
+    cmds: [terragrunt run --all apply --non-interactive]
+
+  kubeconfig:
+    desc: Point kubectl at the lab cluster
+    dotenv: ['.env']
+    cmds:
+      - aws eks update-kubeconfig --name {{.CLUSTER}} --region {{.REGION}}
+
+  # --- Deploy the in-cluster pieces (Vector agent + aggregator + the workload) --------------------
+  deploy:
+    desc: 'Install Vector (agent + aggregator) via Helm and the noisy-terminator workload'
+    deps: [kubeconfig]
+    cmds:
+      - helm repo add vector https://helm.vector.dev
+      - helm repo update vector
+      # Aggregator first so its Service exists before agents start dialing it.
+      - |
+        helm upgrade --install vector-aggregator vector/vector \
+          --version {{.VECTOR_CHART_VERSION}} \
+          --namespace {{.VECTOR_NS}} --create-namespace \
+          -f deploy/vector/aggregator-values.yaml \
+          --wait --timeout 5m
+      - |
+        helm upgrade --install vector-agent vector/vector \
+          --version {{.VECTOR_CHART_VERSION}} \
+          --namespace {{.VECTOR_NS}} \
+          -f deploy/vector/agent-values.yaml \
+          --wait --timeout 5m
+      - kubectl create namespace {{.WORKLOAD_NS}} --dry-run=client -o yaml | kubectl apply -f -
+      - kubectl apply -f deploy/workload/noisy-terminator.yaml
+      - kubectl -n {{.WORKLOAD_NS}} rollout status deployment/noisy-terminator --timeout=120s
+
+  # --- Run the experiment -------------------------------------------------------------------------
+  terminate:
+    desc: 'Delete the workload so its pod enters a long Terminating state (no replacement is created)'
+    cmds:
+      # Delete the Deployment (not just the pod) so the ReplicaSet does NOT spin up a replacement.
+      # The single pod gets a deletionTimestamp, enters Terminating, and lingers for its 1h grace
+      # period while its container keeps logging phase=terminating.
+      - kubectl -n {{.WORKLOAD_NS}} delete deployment noisy-terminator --wait=false
+      - echo "Pod is now Terminating. Watch it with 'task ...:watch-pod' and its collected logs with 'task ...:logs'."
+
+  watch-pod:
+    desc: 'Watch the noisy-terminator pod status (Ctrl-C to stop)'
+    cmds:
+      - kubectl -n {{.WORKLOAD_NS}} get pods -l app=noisy-terminator -o wide -w
+
+  logs:
+    desc: 'Follow what the aggregator has COLLECTED for the noisy-terminator pod (Ctrl-C to stop)'
+    cmds:
+      - echo "Aggregator's view of noisy-terminator lines (grep phase=terminating to spot post-delete logs):"
+      - kubectl -n {{.VECTOR_NS}} logs -l app.kubernetes.io/instance=vector-aggregator -f --tail=50
+        | grep --line-buffered noisy-terminator
+
+  logs-source:
+    desc: "Follow the pod's OWN stdout (ground truth) to compare against what the aggregator collected"
+    cmds:
+      - kubectl -n {{.WORKLOAD_NS}} logs -l app=noisy-terminator -f --tail=20
+
+  status:
+    desc: 'Show the workload pod, Vector pods, and the aggregator Service at a glance'
+    cmds:
+      - kubectl -n {{.WORKLOAD_NS}} get pods -o wide
+      - kubectl -n {{.VECTOR_NS}} get pods,svc -o wide
+
+  # --- Teardown -----------------------------------------------------------------------------------
+  clean-k8s:
+    desc: 'Remove the in-cluster pieces (Vector releases + workload) without destroying the cluster'
+    cmds:
+      - kubectl delete -f deploy/workload/noisy-terminator.yaml --ignore-not-found --wait=false
+      - kubectl delete namespace {{.WORKLOAD_NS}} --ignore-not-found --wait=false
+      - helm uninstall vector-agent -n {{.VECTOR_NS}} || true
+      - helm uninstall vector-aggregator -n {{.VECTOR_NS}} || true
+
+  down:
+    desc: Destroy all infra (also removes everything running on the cluster)
+    dir: infra
+    dotenv: ['../.env']
+    cmds: [terragrunt run --all destroy --non-interactive]
