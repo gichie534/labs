@@ -1,0 +1,27 @@
+# Argo CD server URL + Dex Google connector (Workspace SSO with group membership).
+#
+# __TOKENS__ are filled from .env at deploy time (kept out of Git). The client secret is NOT a token:
+# it is pulled from the k8s secret argocd-google-sso (sourced from Secret Manager) via Argo CD's
+# `$<secret>:<key>` interpolation, so it never appears in a manifest at all.
+#
+# The Google connector reads a user's Workspace groups through the Admin SDK Directory API. It runs
+# KEYLESS: no serviceAccountFilePath — Dex authenticates as the directory SA via GKE Workload
+# Identity (see argocd-dex-server.yaml) and impersonates adminEmail. fetchTransitiveGroupMembership
+# resolves nested group membership.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: argocd-cm
+data:
+  url: __ARGOCD_URL__
+  dex.config: |
+    connectors:
+      - type: google
+        id: google
+        name: Google
+        config:
+          clientID: __OAUTH_CLIENT_ID__
+          clientSecret: $argocd-google-sso:oauth.clientSecret
+          redirectURI: __ARGOCD_URL__/api/dex/callback
+          adminEmail: __DEX_ADMIN_EMAIL__
+          fetchTransitiveGroupMembership: true

@@ -1,0 +1,18 @@
+# Tenant A boundary. An AppProject restricts what its Applications may deploy: only from this repo,
+# only into the team-a namespace, namespaced resources only. Combined with RBAC (role:team-a), this
+# is the multi-tenancy: team-a users can act only on apps in this project.
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: team-a
+  namespace: argocd
+spec:
+  description: Tenant A
+  sourceRepos:
+    - https://github.com/gichie534/labs.git
+  destinations:
+    - server: https://kubernetes.default.svc
+      namespace: team-a
+  namespaceResourceWhitelist:
+    - group: '*'
+      kind: '*'

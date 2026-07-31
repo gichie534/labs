@@ -1,0 +1,8 @@
+# Trivial, namespace-agnostic sample workload shared by both tenants. The owning Application sets the
+# destination namespace, so nothing here pins one.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - deployment.yaml
+  - service.yaml

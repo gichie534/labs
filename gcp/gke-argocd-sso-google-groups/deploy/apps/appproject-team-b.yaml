@@ -1,0 +1,16 @@
+# Tenant B boundary (mirror of team-a). Only this repo, only the team-b namespace.
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: team-b
+  namespace: argocd
+spec:
+  description: Tenant B
+  sourceRepos:
+    - https://github.com/gichie534/labs.git
+  destinations:
+    - server: https://kubernetes.default.svc
+      namespace: team-b
+  namespaceResourceWhitelist:
+    - group: '*'
+      kind: '*'

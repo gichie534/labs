@@ -1,0 +1,8 @@
+# Run argocd-server in insecure (plain-HTTP) mode; TLS is terminated at the GKE Gateway with the
+# Google-managed cert. Same as the base lab.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: argocd-cmd-params-cm
+data:
+  server.insecure: "true"

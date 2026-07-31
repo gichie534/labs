@@ -1,0 +1,27 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Argo CD platform: upstream HA install pinned by tag, the public Gateway front door, and the SSO
+# wiring (Dex Google connector + multi-tenant RBAC + the SA-key volume mount).
+#
+# Unlike the base lab, this overlay is applied by the operator (`task argocd-sso:deploy`) rather than
+# self-managed by the app-of-apps, because its ConfigMaps carry identity values (the Argo CD URL,
+# OAuth client id, admin email, and Workspace group emails). The deploy task fills the __TOKENS__
+# below from .env at apply time, so the committed files stay free of the real domain/identities. The
+# app-of-apps instead manages the domain-free tenant projects and apps under deploy/apps.
+
+namespace: argocd
+
+resources:
+  - namespace.yaml
+  - https://github.com/argoproj/argo-cd/manifests/ha/cluster-install?ref=v3.4.5
+  - gateway.yaml
+  - httproute.yaml
+  - httproute-redirect.yaml
+  - healthcheckpolicy.yaml
+
+patches:
+  - path: argocd-cmd-params-cm.yaml   # server.insecure (TLS ends at the Gateway)
+  - path: argocd-cm.yaml              # Argo CD url + Dex Google connector
+  - path: argocd-rbac-cm.yaml         # multi-tenant group -> role RBAC
+  - path: argocd-dex-server.yaml      # mount the Dex SA key from the SM-sourced secret

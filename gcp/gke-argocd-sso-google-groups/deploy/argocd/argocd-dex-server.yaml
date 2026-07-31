@@ -1,0 +1,10 @@
+# Bind the argocd-dex-server Kubernetes SA to the Google directory-reader SA via GKE Workload
+# Identity — this is what lets Dex read Workspace groups WITHOUT a service-account key. The GSA email
+# (__DEX_GSA_EMAIL__) is filled from .env at deploy time (it's argocd-dex-directory@<project>). The
+# matching workloadIdentityUser IAM binding is created by the sso-secrets unit.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: argocd-dex-server
+  annotations:
+    iam.gke.io/gcp-service-account: __DEX_GSA_EMAIL__

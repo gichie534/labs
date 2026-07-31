@@ -1,0 +1,21 @@
+# Tenant B's sample app, in the team-b project, deployed to the team-b namespace.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: team-b-hello
+  namespace: argocd
+spec:
+  project: team-b
+  source:
+    repoURL: https://github.com/gichie534/labs.git
+    targetRevision: main
+    path: gcp/gke-argocd-sso-google-groups/deploy/workloads/hello
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: team-b
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

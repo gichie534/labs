@@ -1,0 +1,206 @@
+version: '3'
+
+# Lifecycle for the gcp/gke-argocd-sso-google-groups lab = the base gke-argocd lab + Google Workspace
+# SSO (Dex, Google groups connector) + multi-tenant RBAC.
+#
+# Infra (Terragrunt, under infra/): VPC, Autopilot cluster, reserved global IP, managed cert,
+# delegated DNS zone (all as in the base lab), plus an sso-secrets unit (Dex directory-reader SA +
+# key + Admin SDK API + the OAuth/SA-key secrets in Secret Manager).
+#
+# Argo CD is installed with kustomize (HA) and fronted by the GKE Gateway + managed cert. SSO/RBAC
+# config carries identity values (URL, OAuth client id, admin email, group emails), so the platform
+# overlay is RENDERED from .env at deploy time and applied by the operator; only the domain-free
+# tenant layer (AppProjects + apps) is delivered by the app-of-apps.
+#
+# ONE-TIME MANUAL prerequisites (Google has no Terraform for these — see README):
+#   1. Create an OAuth 2.0 Web client; redirect URI https://$ARGOCD_DOMAIN/api/dex/callback; put its
+#      id/secret in .env.
+#   2. After `up`, authorize the directory SA's client id (output of the sso-secrets unit) for the
+#      Directory read scopes in the Workspace Admin console (domain-wide delegation).
+#
+# Only `up`, `deploy`, and the destroy half of `down` create/modify cloud resources.
+
+vars:
+  CLUSTER: gke-argocd-sso-google-groups
+  NAMESPACE: argocd
+  OAUTH_SECRET: argocd-oauth-client-secret
+  SSO_K8S_SECRET: argocd-google-sso
+
+tasks:
+  default:
+    cmds: [task --list]
+    silent: true
+
+  init-env:
+    desc: Seed .env from .env.example (no-op if .env already exists)
+    cmds:
+      - |
+        if [ -f .env ]; then
+          echo ".env already exists — leaving it untouched."
+        else
+          cp .env.example .env
+          echo "Created .env from .env.example — edit it and fill in your values."
+        fi
+
+  init-state:
+    desc: Create the GCS bucket for Terraform/Terragrunt remote state (idempotent; run once before `up`)
+    dotenv: ['.env']
+    cmds:
+      - |
+        : "${GCP_PROJECT:?set GCP_PROJECT=<project id>}"
+        : "${TF_STATE_BUCKET:?set TF_STATE_BUCKET=<bucket name (no gs:// prefix)>}"
+        LOCATION="${GCP_REGION:-us-central1}"
+        if gcloud storage buckets describe "gs://$TF_STATE_BUCKET" --project "$GCP_PROJECT" >/dev/null 2>&1; then
+          echo "Bucket gs://$TF_STATE_BUCKET already exists — nothing to do."
+        else
+          echo "Creating gs://$TF_STATE_BUCKET in $LOCATION..."
+          gcloud storage buckets create "gs://$TF_STATE_BUCKET" \
+            --project "$GCP_PROJECT" \
+            --location "$LOCATION" \
+            --uniform-bucket-level-access \
+            --public-access-prevention
+        fi
+        gcloud storage buckets update "gs://$TF_STATE_BUCKET" --versioning
+
+  fmt:
+    desc: Format Terragrunt HCL
+    cmds:
+      - terragrunt hcl format
+
+  validate:
+    desc: Validate every infra unit (cost-free)
+    dir: infra
+    dotenv: ['../.env']
+    cmds: [terragrunt run --all validate]
+
+  lint:
+    desc: Lint Terraform/Terragrunt and render the kustomize overlays (cost-free)
+    cmds:
+      - tflint --recursive
+      - kubectl kustomize deploy/argocd > /dev/null
+      - kubectl kustomize deploy/workloads/hello > /dev/null
+
+  plan:
+    desc: Plan all infra units (cost-free)
+    dir: infra
+    dotenv: ['../.env']
+    cmds: [terragrunt run --all plan]
+
+  up:
+    desc: Provision infra — VPC, cluster, IP, cert, DNS, and the SSO SA/secrets (creates cloud resources)
+    dir: infra
+    dotenv: ['../.env']
+    cmds: [terragrunt run --all apply --non-interactive]
+
+  dwd-id:
+    desc: Print the directory SA client id to authorize for domain-wide delegation in the Workspace Admin console
+    dir: infra/sso-secrets
+    dotenv: ['../../.env']
+    silent: true
+    cmds:
+      - |
+        CLIENT_ID="$(terragrunt output -raw directory_sa_client_id 2>/dev/null)"
+        echo "Authorize domain-wide delegation in the Workspace Admin console:"
+        echo "  admin.google.com -> Security -> Access and data control -> API controls -> Domain-wide delegation -> Add new"
+        echo
+        echo "  Client ID: $CLIENT_ID"
+        echo "  OAuth scopes:"
+        echo "    https://www.googleapis.com/auth/admin.directory.group.readonly"
+        echo "    https://www.googleapis.com/auth/admin.directory.user.readonly"
+
+  creds:
+    desc: Fetch kube-context for the cluster
+    dotenv: ['.env']
+    cmds:
+      - gcloud container clusters get-credentials {{.CLUSTER}} --region "$GCP_REGION"
+
+  deploy:
+    desc: Inject SSO secrets from Secret Manager, render+apply the Argo CD platform, then apply the app-of-apps
+    dotenv: ['.env']
+    cmds:
+      - |
+        : "${GCP_PROJECT:?set GCP_PROJECT}"
+        : "${ARGOCD_DOMAIN:?set ARGOCD_DOMAIN}"
+        : "${OAUTH_CLIENT_ID:?set OAUTH_CLIENT_ID}"
+        : "${DEX_ADMIN_EMAIL:?set DEX_ADMIN_EMAIL}"
+        : "${ADMIN_GROUP:?set ADMIN_GROUP}"
+        : "${TEAM_A_GROUP:?set TEAM_A_GROUP}"
+        : "${TEAM_B_GROUP:?set TEAM_B_GROUP}"
+
+        echo "Pulling the OAuth client secret from Secret Manager into the k8s secret {{.SSO_K8S_SECRET}}..."
+        CLIENT_SECRET="$(gcloud secrets versions access latest --secret={{.OAUTH_SECRET}} --project="$GCP_PROJECT")"
+        kubectl create namespace {{.NAMESPACE}} --dry-run=client -o yaml | kubectl apply -f -
+        kubectl -n {{.NAMESPACE}} create secret generic {{.SSO_K8S_SECRET}} \
+          --from-literal=oauth.clientSecret="$CLIENT_SECRET" \
+          --dry-run=client -o yaml | kubectl apply -f -
+        # Argo CD only resolves `$secret:key` references from secrets labeled part-of argocd.
+        kubectl -n {{.NAMESPACE}} label secret {{.SSO_K8S_SECRET}} app.kubernetes.io/part-of=argocd --overwrite
+
+        echo "Rendering the platform overlay (filling identity tokens from .env) and applying..."
+        DEX_GSA_EMAIL="argocd-dex-directory@$GCP_PROJECT.iam.gserviceaccount.com"
+        kubectl kustomize deploy/argocd \
+          | sed \
+            -e "s|__ARGOCD_URL__|https://$ARGOCD_DOMAIN|g" \
+            -e "s|__OAUTH_CLIENT_ID__|$OAUTH_CLIENT_ID|g" \
+            -e "s|__DEX_ADMIN_EMAIL__|$DEX_ADMIN_EMAIL|g" \
+            -e "s|__DEX_GSA_EMAIL__|$DEX_GSA_EMAIL|g" \
+            -e "s|__ADMIN_GROUP__|$ADMIN_GROUP|g" \
+            -e "s|__TEAM_A_GROUP__|$TEAM_A_GROUP|g" \
+            -e "s|__TEAM_B_GROUP__|$TEAM_B_GROUP|g" \
+          | kubectl apply --server-side -f -
+
+        echo "Waiting for Argo CD server, then restarting Dex to load the connector + mounted key..."
+        kubectl -n {{.NAMESPACE}} rollout status deploy/argocd-server --timeout=300s
+        kubectl -n {{.NAMESPACE}} rollout restart deploy/argocd-dex-server
+        kubectl -n {{.NAMESPACE}} rollout status deploy/argocd-dex-server --timeout=180s
+
+        echo "Applying the app-of-apps root (tenant projects + apps)..."
+        kubectl apply -f deploy/bootstrap/root-app.yaml
+        echo "Done. Log in at https://$ARGOCD_DOMAIN via 'LOG IN VIA GOOGLE'."
+
+  password:
+    desc: Print the initial Argo CD admin password (local 'admin' user; SSO users log in via Google)
+    cmds:
+      - kubectl -n {{.NAMESPACE}} get secret argocd-initial-admin-secret -o jsonpath='{.data.password}' | base64 -d
+      - echo
+
+  verify:
+    desc: Wait for the Gateway IP + managed cert, then GET the public HTTPS endpoint
+    dotenv: ['.env']
+    cmds:
+      - |
+        : "${ARGOCD_DOMAIN:?set ARGOCD_DOMAIN}"
+        echo "Waiting for the Gateway to report an address..."
+        for i in $(seq 1 60); do
+          IP=$(kubectl -n {{.NAMESPACE}} get gateway argocd -o jsonpath='{.status.addresses[0].value}' 2>/dev/null || true)
+          [ -n "$IP" ] && break
+          sleep 10
+        done
+        : "${IP:?the Gateway never reported an address — is it deployed? (task argocd-sso:deploy)}"
+        echo "Gateway IP: $IP"
+        echo "Probing https://$ARGOCD_DOMAIN/ (first managed-cert issuance can take 10-20m)..."
+        for i in $(seq 1 120); do
+          if curl -fsS --max-time 10 "https://$ARGOCD_DOMAIN/healthz?full=true" >/dev/null; then
+            echo "OK: Argo CD served over HTTPS at https://$ARGOCD_DOMAIN/"
+            exit 0
+          fi
+          sleep 15
+        done
+        echo "FAILED: could not reach https://$ARGOCD_DOMAIN/ (check cert status + DNS)" >&2
+        exit 1
+
+  test:
+    desc: Cheap smoke test — render the kustomize overlays and validate infra (cost-free)
+    cmds:
+      - kubectl kustomize deploy/argocd > /dev/null
+      - kubectl kustomize deploy/workloads/hello > /dev/null
+      - task: validate
+
+  down:
+    desc: Tear down — delete the app-of-apps + Argo CD platform (removes the Gateway/LB), then destroy infra
+    dotenv: ['.env']
+    cmds:
+      - kubectl delete -f deploy/bootstrap/root-app.yaml --ignore-not-found --wait=true || true
+      - kubectl delete -k deploy/argocd --ignore-not-found --wait=true || true
+      - kubectl -n {{.NAMESPACE}} delete secret {{.SSO_K8S_SECRET}} --ignore-not-found || true
+      - cd infra && terragrunt run --all destroy --non-interactive

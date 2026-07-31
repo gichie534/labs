@@ -1,0 +1,36 @@
+# Multi-tenant RBAC: map Workspace groups (from Dex) to Argo CD roles.
+#
+# Group emails are __TOKENS__ filled from .env at deploy time so the Workspace domain stays out of
+# Git. scopes tells Argo CD to read the `groups` (and email) claims from the SSO token.
+#
+# Model:
+#   - default: no access (authenticated users see nothing until a group grants them a role).
+#   - admins group  -> built-in role:admin (full control).
+#   - team-a group  -> role:team-a, scoped to Applications in the team-a AppProject only.
+#   - team-b group  -> role:team-b, scoped to Applications in the team-b AppProject only.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: argocd-rbac-cm
+data:
+  scopes: '[groups, email]'
+  policy.default: role:''
+  policy.csv: |
+    # platform admins
+    g, __ADMIN_GROUP__, role:admin
+
+    # tenant A: manage only apps in the team-a project
+    p, role:team-a, applications, get, team-a/*, allow
+    p, role:team-a, applications, sync, team-a/*, allow
+    p, role:team-a, applications, action/*, team-a/*, allow
+    p, role:team-a, logs, get, team-a/*, allow
+    p, role:team-a, projects, get, team-a, allow
+    g, __TEAM_A_GROUP__, role:team-a
+
+    # tenant B: manage only apps in the team-b project
+    p, role:team-b, applications, get, team-b/*, allow
+    p, role:team-b, applications, sync, team-b/*, allow
+    p, role:team-b, applications, action/*, team-b/*, allow
+    p, role:team-b, logs, get, team-b/*, allow
+    p, role:team-b, projects, get, team-b, allow
+    g, __TEAM_B_GROUP__, role:team-b

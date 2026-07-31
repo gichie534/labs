@@ -1,0 +1,22 @@
+# Tenant A's sample app, in the team-a project, deployed to the team-a namespace. Both tenants share
+# the same hostname-agnostic workload manifests; only the project + destination namespace differ.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: team-a-hello
+  namespace: argocd
+spec:
+  project: team-a
+  source:
+    repoURL: https://github.com/gichie534/labs.git
+    targetRevision: main
+    path: gcp/gke-argocd-sso-google-groups/deploy/workloads/hello
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: team-a
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

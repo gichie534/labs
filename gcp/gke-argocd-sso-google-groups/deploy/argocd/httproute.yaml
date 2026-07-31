@@ -1,0 +1,14 @@
+# Routes HTTPS traffic to argocd-server (port 80, insecure behind the Gateway). Hostname-less so the
+# real domain stays out of committed manifests (cert matched by SNI). Same as the base lab.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: argocd-server
+spec:
+  parentRefs:
+    - name: argocd
+      sectionName: https
+  rules:
+    - backendRefs:
+        - name: argocd-server
+          port: 80
