@@ -17,7 +17,7 @@ spec:
   source:
     repoURL: https://github.com/gichie534/labs.git
     targetRevision: main
-    path: labs/gcp/gke-argocd/deploy/argocd
+    path: gcp/gke-argocd/deploy/argocd
   destination:
     server: https://kubernetes.default.svc
     namespace: argocd
