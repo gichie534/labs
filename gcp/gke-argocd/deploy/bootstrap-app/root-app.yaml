@@ -1,0 +1,30 @@
+# The app-of-apps ROOT Application. Applied once by the deploy step (`task argocd:deploy`)
+# after Argo CD is installed. It watches deploy/apps/ (a directory of child Applications) and lets
+# Argo CD take over from there — every subsequent change is delivered by GitOps, not kubectl.
+#
+# It lives under deploy/bootstrap/ (not deploy/apps/) so the root app does not manage/prune itself.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: root
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    # This labs repo. The deploy/ tree is a subpath; Argo CD clones the repo and renders this path.
+    repoURL: https://github.com/gichie534/labs.git
+    targetRevision: main
+    path: gcp/gke-argocd/deploy/apps
+    directory:
+      recurse: true
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: argocd
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
