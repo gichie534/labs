@@ -1,6 +1,7 @@
 # Tenant A boundary. An AppProject restricts what its Applications may deploy: only from this repo,
-# only into the team-a namespace, namespaced resources only. Combined with RBAC (role:team-a), this
-# is the multi-tenancy: team-a users can act only on apps in this project.
+# only into the team-a namespace, and only namespaced resources — plus the team-a Namespace itself
+# (a cluster-scoped resource, needed because the app uses CreateNamespace=true). Combined with RBAC
+# (role:team-a), this is the multi-tenancy: team-a users can act only on apps in this project.
 apiVersion: argoproj.io/v1alpha1
 kind: AppProject
 metadata:
@@ -16,3 +17,7 @@ spec:
   namespaceResourceWhitelist:
     - group: '*'
       kind: '*'
+  # Only the Namespace cluster resource is allowed (for CreateNamespace); nothing else cluster-scoped.
+  clusterResourceWhitelist:
+    - group: ''
+      kind: Namespace
