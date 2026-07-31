@@ -1,0 +1,19 @@
+# Routes HTTPS traffic on the Gateway to the argocd-server Service. Deliberately has NO `hostnames`
+# field: the Gateway serves whatever host resolves to its IP, and the cert (matched by SNI) is
+# handled by Certificate Manager. Keeping the hostname out means the real domain never lands in a
+# committed GitOps manifest — it lives only in the Terraform inputs (from .env).
+#
+# argocd-server runs insecure (plain HTTP) behind the Gateway, so we target its port 80. The GKE
+# Gateway controller automatically creates a NEG for this ClusterIP Service (container-native LB).
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: argocd-server
+spec:
+  parentRefs:
+    - name: argocd
+      sectionName: https
+  rules:
+    - backendRefs:
+        - name: argocd-server
+          port: 80

@@ -1,0 +1,9 @@
+# Strategic-merge patch: run argocd-server in insecure (plain-HTTP) mode. TLS is terminated at the
+# GKE Gateway with the Google-managed Certificate Manager cert, so the server itself must not also
+# try to terminate TLS (otherwise HTTPS-to-HTTP mismatch and redirect loops).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: argocd-cmd-params-cm
+data:
+  server.insecure: "true"

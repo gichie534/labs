@@ -1,0 +1,28 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Production-ready Argo CD, installed straight from the upstream HA, cluster-scoped manifests at a
+# pinned tag. The HA variant runs redis-ha (3 replicas + haproxy) and multiple
+# server/repo-server/applicationset replicas — GKE Autopilot provisions the capacity automatically.
+#
+# Everything is pinned: the base is fetched at ref=v3.4.5 (kustomize remote base), so a re-sync
+# months later renders identical manifests.
+
+namespace: argocd
+
+resources:
+  # Namespace first so the namespaced resources below have a home.
+  - namespace.yaml
+  # Upstream Argo CD, HA + cluster-scoped RBAC + CRDs, pinned by tag.
+  - https://github.com/argoproj/argo-cd/manifests/ha/cluster-install?ref=v3.4.5
+  # Public front door (global external ALB via the GKE Gateway controller).
+  - gateway.yaml
+  - httproute.yaml
+  - httproute-redirect.yaml
+  - healthcheckpolicy.yaml
+
+patches:
+  # TLS terminates at the Gateway (Google-managed cert), so argocd-server runs plain HTTP behind it.
+  # Without this, the LB would speak HTTP to a server expecting HTTPS and health checks/redirects
+  # would loop.
+  - path: argocd-cmd-params-cm.yaml

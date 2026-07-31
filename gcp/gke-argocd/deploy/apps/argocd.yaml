@@ -1,0 +1,30 @@
+# Child Application managed by the app-of-apps root. It points Argo CD at its OWN install manifests
+# (deploy/argocd) so Argo CD self-manages — the recommended production pattern: after the one-time
+# kubectl bootstrap, drift in the Argo CD install, Gateway, routes, or cert wiring is reconciled by
+# Argo CD itself from Git.
+#
+# ServerSideApply avoids the client-side "metadata.annotations too long" failure on Argo CD's large
+# CRDs. selfHeal + prune keep the live state exactly matching Git.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: argocd
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/gichie534/labs.git
+    targetRevision: main
+    path: labs/gcp/gke-argocd/deploy/argocd
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: argocd
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - ServerSideApply=true
+      - CreateNamespace=true

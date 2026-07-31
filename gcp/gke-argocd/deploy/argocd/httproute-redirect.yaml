@@ -1,0 +1,17 @@
+# Redirects all plain-HTTP traffic on the Gateway's port-80 listener to HTTPS (301). No hostnames
+# for the same privacy reason as the main route. This is the Gateway-API-native equivalent of the
+# classic Ingress FrontendConfig HTTP->HTTPS redirect.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: argocd-redirect
+spec:
+  parentRefs:
+    - name: argocd
+      sectionName: http
+  rules:
+    - filters:
+        - type: RequestRedirect
+          requestRedirect:
+            scheme: https
+            statusCode: 301

@@ -1,0 +1,34 @@
+# Global external Application Load Balancer fronting Argo CD, provisioned by the GKE Gateway
+# controller.
+#
+# TLS: the `networking.gke.io/certmap` annotation attaches the Certificate Manager certificate map
+# named "argocd" (created by infra/certs). Per GKE docs, an HTTPS listener that uses certmap has NO
+# `tls` block — the annotation supplies the cert. The map value is generic ("argocd"), so the real
+# hostname never appears in this file.
+#
+# IP: `spec.addresses` pins the reserved global static IP by name (infra/address → "argocd-gateway"),
+# so the DNS A record is stable across teardown/recreate.
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: argocd
+  annotations:
+    networking.gke.io/certmap: argocd
+spec:
+  gatewayClassName: gke-l7-global-external-managed
+  addresses:
+    - type: NamedAddress
+      value: argocd-gateway
+  listeners:
+    - name: http
+      protocol: HTTP
+      port: 80
+      allowedRoutes:
+        namespaces:
+          from: Same
+    - name: https
+      protocol: HTTPS
+      port: 443
+      allowedRoutes:
+        namespaces:
+          from: Same

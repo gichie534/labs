@@ -1,0 +1,18 @@
+# Tells the load balancer how to health-check the argocd-server backend. argocd-server serves a
+# lightweight liveness endpoint at /healthz on its container port 8080. Without this, the LB uses a
+# default "/" check that can misbehave for the SPA/gRPC server and flap the backend unhealthy.
+apiVersion: networking.gke.io/v1
+kind: HealthCheckPolicy
+metadata:
+  name: argocd-server
+spec:
+  default:
+    config:
+      type: HTTP
+      httpHealthCheck:
+        requestPath: /healthz
+        port: 8080
+  targetRef:
+    group: ""
+    kind: Service
+    name: argocd-server

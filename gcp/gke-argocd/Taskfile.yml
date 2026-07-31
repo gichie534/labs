@@ -1,0 +1,153 @@
+version: '3'
+
+# Lifecycle for the gcp/gke-argocd lab.
+#
+# Infra is Terragrunt (units under infra/, composed by dependency blocks): a VPC, a regional GKE
+# Autopilot cluster, a reserved global static IP, a Certificate Manager Google-managed cert, and a
+# delegated public Cloud DNS zone. Argo CD is then installed with kustomize (upstream HA base pinned
+# by tag) and exposed on a public HTTPS endpoint via the GKE Gateway API + the managed cert. A single
+# app-of-apps root Application makes Argo CD self-manage everything from Git afterwards.
+#
+# Only `up`, `bootstrap`, and the destroy half of `down` create/modify cloud resources.
+# fmt/validate/lint/plan are cost-free.
+#
+# CONFIG: lab inputs (GCP_PROJECT, GCP_REGION, ARGOCD_DOMAIN, PARENT_DNS_*, TF_STATE_BUCKET) are
+# loaded from a local `.env` via Task's built-in dotenv. Copy `.env.example` to `.env` (or run
+# `task argocd:init-env`) and fill it in; `.env` is gitignored. Shell exports still win. Terragrunt's
+# root.hcl reads them through get_env(...). A missing `.env` is harmless — cost-free tasks still run.
+#
+# NOTE the dotenv path nuance: dotenv resolves relative to the task's working dir, so tasks that set
+# `dir: infra` load `['../.env']` while the rest load `['.env']`.
+
+vars:
+  CLUSTER: gke-argocd
+  NAMESPACE: argocd
+
+tasks:
+  default:
+    cmds: [task --list]
+    silent: true
+
+  init-env:
+    desc: Seed .env from .env.example (no-op if .env already exists)
+    cmds:
+      - |
+        if [ -f .env ]; then
+          echo ".env already exists — leaving it untouched."
+        else
+          cp .env.example .env
+          echo "Created .env from .env.example — edit it and fill in your values."
+        fi
+
+  init-state:
+    desc: Create the GCS bucket for Terraform/Terragrunt remote state (idempotent; run once before `up`)
+    dotenv: ['.env']
+    cmds:
+      - |
+        : "${GCP_PROJECT:?set GCP_PROJECT=<project id>}"
+        : "${TF_STATE_BUCKET:?set TF_STATE_BUCKET=<bucket name (no gs:// prefix)>}"
+        LOCATION="${GCP_REGION:-us-central1}"
+        if gcloud storage buckets describe "gs://$TF_STATE_BUCKET" --project "$GCP_PROJECT" >/dev/null 2>&1; then
+          echo "Bucket gs://$TF_STATE_BUCKET already exists — nothing to do."
+        else
+          echo "Creating gs://$TF_STATE_BUCKET in $LOCATION..."
+          gcloud storage buckets create "gs://$TF_STATE_BUCKET" \
+            --project "$GCP_PROJECT" \
+            --location "$LOCATION" \
+            --uniform-bucket-level-access \
+            --public-access-prevention
+        fi
+        gcloud storage buckets update "gs://$TF_STATE_BUCKET" --versioning
+
+  fmt:
+    desc: Format Terragrunt HCL
+    cmds:
+      - terragrunt hcl format
+
+  validate:
+    desc: Validate every infra unit (cost-free)
+    dir: infra
+    dotenv: ['../.env']
+    cmds: [terragrunt run --all validate]
+
+  lint:
+    desc: Lint Terraform/Terragrunt and render the kustomize overlays (cost-free)
+    cmds:
+      - tflint --recursive
+      - kubectl kustomize deploy/argocd > /dev/null
+
+  plan:
+    desc: Plan all infra units (cost-free)
+    dir: infra
+    dotenv: ['../.env']
+    cmds: [terragrunt run --all plan]
+
+  up:
+    desc: Provision infra — VPC, Autopilot cluster, reserved IP, managed cert, delegated DNS zone (creates cloud resources)
+    dir: infra
+    dotenv: ['../.env']
+    cmds: [terragrunt run --all apply --non-interactive]
+
+  creds:
+    desc: Fetch kube-context for the cluster
+    dotenv: ['.env']
+    cmds:
+      - gcloud container clusters get-credentials {{.CLUSTER}} --region "$GCP_REGION"
+
+  deploy:
+    desc: Install Argo CD (kustomize HA) + Gateway/cert wiring, then apply the app-of-apps root so Argo CD self-manages
+    dotenv: ['.env']
+    cmds:
+      # Server-side apply: Argo CD's CRDs are large enough to exceed the client-side
+      # last-applied-configuration annotation limit. Argo CD then self-manages with SSA too.
+      - kubectl apply --server-side -k deploy/argocd
+      - echo "Waiting for Argo CD server to roll out..."
+      - kubectl -n {{.NAMESPACE}} rollout status deploy/argocd-server --timeout=300s
+      - kubectl apply -f deploy/bootstrap/root-app.yaml
+      - echo "app-of-apps applied — Argo CD now manages itself from Git."
+
+  password:
+    desc: Print the initial Argo CD admin password (username 'admin')
+    cmds:
+      - kubectl -n {{.NAMESPACE}} get secret argocd-initial-admin-secret -o jsonpath='{.data.password}' | base64 -d
+      - echo
+
+  verify:
+    desc: Wait for the Gateway IP + managed cert, then GET the public HTTPS endpoint
+    dotenv: ['.env']
+    cmds:
+      - |
+        : "${ARGOCD_DOMAIN:?set ARGOCD_DOMAIN=<the public hostname>}"
+        echo "Waiting for the Gateway to report an address..."
+        for i in $(seq 1 60); do
+          IP=$(kubectl -n {{.NAMESPACE}} get gateway argocd \
+            -o jsonpath='{.status.addresses[0].value}' 2>/dev/null || true)
+          [ -n "$IP" ] && break
+          sleep 10
+        done
+        : "${IP:?the Gateway never reported an address — is it deployed? (task argocd:deploy)}"
+        echo "Gateway IP: $IP"
+        echo "Probing https://$ARGOCD_DOMAIN/ (first managed-cert issuance can take 10-20m)..."
+        for i in $(seq 1 120); do
+          if curl -fsS --max-time 10 "https://$ARGOCD_DOMAIN/healthz?full=true" >/dev/null; then
+            echo "OK: Argo CD served over HTTPS at https://$ARGOCD_DOMAIN/"
+            exit 0
+          fi
+          sleep 15
+        done
+        echo "FAILED: could not reach https://$ARGOCD_DOMAIN/ (check cert status + DNS)" >&2
+        exit 1
+
+  test:
+    desc: Cheap smoke test — render the kustomize overlay and validate infra (cost-free)
+    cmds:
+      - kubectl kustomize deploy/argocd > /dev/null
+      - task: validate
+
+  down:
+    desc: Tear down — delete the Argo CD apps/install (removes the LB/Gateway) then destroy all infra
+    dotenv: ['.env']
+    cmds:
+      - kubectl delete -f deploy/bootstrap/root-app.yaml --ignore-not-found --wait=true || true
+      - kubectl delete -k deploy/argocd --ignore-not-found --wait=true || true
+      - cd infra && terragrunt run --all destroy --non-interactive
