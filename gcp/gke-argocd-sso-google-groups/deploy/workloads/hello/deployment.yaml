@@ -19,10 +19,14 @@ spec:
           image: nginxinc/nginx-unprivileged:1.27-alpine
           ports:
             - containerPort: 8080
+          # GKE Autopilot rewrites requests up to its per-container minimums (50m CPU / 52Mi mem),
+          # which otherwise leaves the Deployment permanently OutOfSync in Argo CD. Declaring
+          # requests above those minimums, with limits == requests, means Autopilot doesn't mutate
+          # anything, so there's no perpetual diff.
           resources:
             requests:
-              cpu: 10m
-              memory: 32Mi
+              cpu: 100m
+              memory: 128Mi
             limits:
               cpu: 100m
-              memory: 64Mi
+              memory: 128Mi
