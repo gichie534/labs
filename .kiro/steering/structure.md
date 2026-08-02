@@ -7,7 +7,6 @@ inclusion: always
 ## Repository layout
 
 ```
-Taskfile.yml                # root: includes each lab's Taskfile (namespaced)
 <provider>/                 # provider grouping directory (e.g. aws, gcp)
   <name>/                   # one self-contained lab (vertical slice)
     root.hcl                # this lab's root Terragrunt config: remote_state + provider generation
@@ -25,6 +24,10 @@ Taskfile.yml                # root: includes each lab's Taskfile (namespaced)
 There is no `labs/` wrapper directory — labs are grouped by provider directly at the repo root, as
 `<provider>/<name>/`. Each lab owns its own `root.hcl` (named `root.hcl`, the name Terragrunt and
 tenv now recommend, not `terragrunt.hcl`); there is no shared root config at the repo root.
+
+There is **no root `Taskfile.yml`** either. Each lab's `Taskfile.yml` is fully self-contained and
+run from within the lab folder (`cd <provider>/<name> && task <name>`); labs are not composed or
+namespaced from the repo root.
 
 ## Lab naming
 

@@ -60,11 +60,12 @@ deploy/                     # only if the app runs on k8s (manifests / Argo CD A
 
 ## 5. Automation
 
-- Add `Taskfile.yml` per the `taskfile-conventions` steering (standard interface).
-- Register the lab in the root `Taskfile.yml` `includes:` with a short namespace.
+- Add `Taskfile.yml` per the `taskfile-conventions` steering (standard interface). It is
+  self-contained and run from inside the lab folder — there is no root Taskfile to register with.
 - Load the lab's runtime inputs from a `.env` file (committed `.env.example` template, gitignored
-  `.env`) via per-task `dotenv:` — see the dotenv section in `taskfile-conventions`. Include an
-  `init-env` task that seeds `.env` from `.env.example` (no-op if `.env` exists).
+  `.env`) via a single top-level `dotenv: ['.env']` — see the dotenv section in
+  `taskfile-conventions`. Include an `init-env` task that seeds `.env` from `.env.example` (no-op if
+  `.env` exists).
 
 ## 6. Documentation
 
@@ -76,11 +77,12 @@ deploy/                     # only if the app runs on k8s (manifests / Argo CD A
 
 - Add/confirm `.terraform-version` and `.terragrunt-version` (read by tenv — a single version
   string each).
-- Verify the dry path with no cloud cost: `task <ns>:fmt`, `task <ns>:validate`, `task <ns>:plan`.
+- Verify the dry path with no cloud cost, from inside the lab folder: `task fmt`, `task validate`,
+  `task plan`.
 
 ## Acceptance criteria
 
 - The lab folder is self-contained — everything it involves is visible inside it.
 - All reusable infra is referenced from the modules repo by a pinned `?ref=` tag (no copied source).
-- The standard Task interface works and the lab is registered in the root Taskfile.
+- The standard Task interface works, run from inside the lab folder.
 - `README.md` and at least one ADR exist.

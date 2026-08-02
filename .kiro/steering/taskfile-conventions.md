@@ -1,13 +1,17 @@
 ---
 inclusion: auto
 name: taskfile-conventions
-description: Conventions for Task (Taskfile.yml) automation in this labs repo. Use when creating or editing a Taskfile, automating a lab's lifecycle, or wiring the root Taskfile to a lab.
+description: Conventions for Task (Taskfile.yml) automation in this labs repo. Use when creating or editing a lab's Taskfile or automating a lab's lifecycle.
 ---
 
 # Taskfile Conventions
 
 Automation uses **Task** (`Taskfile.yml`, schema `version: '3'`). Every lab exposes the **same
-standard interface** so any lab — and the repo as a whole — can be driven the same way.
+standard interface** so any lab can be driven the same way.
+
+Each lab's `Taskfile.yml` is **self-contained** and run from inside the lab folder
+(`cd <provider>/<name> && task <name>`). There is **no root `Taskfile.yml`** composing or
+namespacing labs — do not create or register anything at the repo root.
 
 ## Standard task interface (per lab)
 
@@ -46,18 +50,25 @@ gitignored (already covered by the repo `.gitignore`). Shell-exported vars take 
 `.env`, and a missing `.env` is harmless (vars stay empty), so cost-free tasks still run on a clean
 checkout.
 
-Two non-obvious constraints (Task behavior — both matter):
+Declare **one top-level `dotenv: ['.env']`** at the root of the lab's `Taskfile.yml`. It loads once,
+resolved relative to the lab root (where `task` is invoked, or the Taskfile's dir when run from a
+subfolder), and the resulting vars are visible to every task regardless of its `dir:`. So a task
+with `dir: infra` still sees the same lab-root `.env` — no `../.env` juggling.
 
-- **A global top-level `dotenv:` is rejected in a Taskfile that another Taskfile `include`s.** Every
-  lab Taskfile is included by the root one, so declare `dotenv:` **per task** instead, on each task
-  that needs lab inputs (not on `default` or purely-local tasks).
-- **dotenv resolves relative to the task's working dir.** Tasks that set `dir: infra` must load
-  `dotenv: ['../.env']` (the lab root); tasks without `dir:` load `dotenv: ['.env']`. Both point at
-  the single lab-root `.env`.
+> A single top-level `dotenv:` used to be impossible here: Task
+> [rejects a top-level `dotenv:` in a Taskfile that another Taskfile `include`s](https://github.com/go-task/task/issues/1075),
+> and every lab was pulled in by a root Taskfile, which forced a fragile **per-task** `dotenv:` with
+> `.env` / `../.env` / `../../.env` paths tuned to each task's `dir:`. With the root Taskfile gone,
+> labs are standalone, so the single top-level form is correct — do not reintroduce per-task dotenv.
 
 ```yaml
+version: '3'
+
+# Loaded once, relative to the lab root; visible to every task regardless of its `dir:`.
+dotenv: ['.env']
+
 tasks:
-  init-env: # local-only, no dotenv (it creates the .env)
+  init-env: # creates the .env; the top-level dotenv having found none is harmless
     desc: Create a local .env from the template (no-op if .env already exists)
     cmds:
       - |
@@ -68,22 +79,23 @@ tasks:
           echo "Created .env from .env.example — fill in your values."
         fi
 
-  up: # runs in infra/ -> ../.env
+  up:
     dir: infra
-    dotenv: ['../.env']
     cmds: [terragrunt run-all apply --non-interactive]
 
-  deploy: # runs at lab root -> .env
-    dotenv: ['.env']
+  deploy:
     cmds: [helm upgrade --install ...]
 ```
 
-Document the `task <ns>:init-env` step (then edit `.env`) in the lab's README.
+Document the `task init-env` step (then edit `.env`) in the lab's README.
 
 ## Example — lab with a Go app on EKS
 
 ```yaml
 version: '3'
+
+# Loaded once, relative to the lab root; visible to every task regardless of its `dir:`.
+dotenv: ['.env']
 
 vars:
   IMAGE: '{{.LAB}}:dev'
@@ -140,26 +152,4 @@ tasks:
     cmds: [terragrunt run-all destroy --non-interactive]
 ```
 
-## Root Taskfile (repo root)
-
-The root `Taskfile.yml` composes labs via `includes`, namespacing each so it can be driven from the
-repo root. Add an entry whenever a new lab is created.
-
-```yaml
-version: '3'
-
-includes:
-  eks:
-    taskfile: aws/eks-cicd/Taskfile.yml
-    dir: aws/eks-cicd
-  vpc:
-    taskfile: aws/secure-vpc/Taskfile.yml
-    dir: aws/secure-vpc
-
-tasks:
-  default:
-    cmds: [task --list]
-    silent: true
-```
-
-Then: `task eks:up`, `task eks:deploy`, `task vpc:plan`, etc.
+Run it from inside the lab folder: `cd aws/eks-cicd && task up`, `task deploy`, `task plan`, etc.
