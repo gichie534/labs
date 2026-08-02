@@ -193,9 +193,60 @@ tasks:
       - task: validate
 
   down:
-    desc: Tear down — delete the app-of-apps + Argo CD platform (removes the Gateway/LB), then destroy infra
+    desc: Tear down — remove the Argo CD LB objects, WAIT for GKE to reap the cloud LB, then destroy infra
     cmds:
-      - kubectl delete -f deploy/bootstrap/root-app.yaml --ignore-not-found --wait=true || true
-      - kubectl delete -k deploy/argocd --ignore-not-found --wait=true || true
-      - kubectl -n {{.NAMESPACE}} delete secret {{.SSO_K8S_SECRET}} --ignore-not-found || true
-      - cd infra && terragrunt run --all destroy --non-interactive
+      # The Gateway + argocd-server Service are translated by GKE controllers into out-of-band GCP
+      # resources: a global ALB whose target proxy references the `argocd` cert map, and NEGs that
+      # attach to the VPC. Those are reaped ASYNCHRONOUSLY. The cluster must stay alive until the
+      # reap finishes — destroying it first orphans the target proxy + NEGs, which then block the
+      # cert-map and VPC destroy with RESOURCE_STILL_IN_USE. So: delete the LB-owning k8s objects,
+      # poll GCP until the cloud LB is gone, and only then run the Terragrunt destroy.
+      - |
+        : "${GCP_PROJECT:?set GCP_PROJECT}"
+
+        # 1. Stop Argo CD reconciling, then delete the objects that own cloud LB resources first.
+        kubectl delete -f deploy/bootstrap/root-app.yaml --ignore-not-found --wait=true || true
+        kubectl -n {{.NAMESPACE}} delete httproute --all   --ignore-not-found --wait=true || true
+        kubectl -n {{.NAMESPACE}} delete gateway argocd     --ignore-not-found --wait=true || true
+        kubectl delete -k deploy/argocd                     --ignore-not-found --wait=true || true
+        kubectl -n {{.NAMESPACE}} delete secret {{.SSO_K8S_SECRET}} --ignore-not-found || true
+
+        # 2. Wait for GKE to actually reap the Gateway ALB (gkegw1-*) and the NEGs (k8s1-*-argocd-*)
+        # while the cluster is still up. Give up after ~10m and warn — the destroy may then hit
+        # RESOURCE_STILL_IN_USE and need `task force-clean-lb` + a re-run.
+        echo "Waiting for GKE to reap the Gateway load balancer + NEGs (cluster kept alive)..."
+        for i in $(seq 1 60); do
+          NEGS=$(gcloud compute network-endpoint-groups list --project "$GCP_PROJECT" \
+                   --filter="name~argocd" --format="value(name)" 2>/dev/null | grep -c . || true)
+          FRULES=$(gcloud compute forwarding-rules list --project "$GCP_PROJECT" --global \
+                   --filter="name~gkegw" --format="value(name)" 2>/dev/null | grep -c . || true)
+          if [ "$NEGS" = "0" ] && [ "$FRULES" = "0" ]; then
+            echo "Cloud LB resources reaped."
+            break
+          fi
+          echo "  still present (negs=$NEGS forwarding-rules=$FRULES) — retrying in 10s..."
+          sleep 10
+        done
+
+        # 3. Now the cert map and VPC have no dangling references — safe to destroy the infra.
+        cd infra && terragrunt run --all destroy --non-interactive
+
+  force-clean-lb:
+    desc: Delete orphaned GKE Gateway LB resources (target proxy/NEGs) left after a cluster was destroyed early
+    silent: true
+    cmds:
+      - |
+        : "${GCP_PROJECT:?set GCP_PROJECT}"
+        echo "Deleting orphaned Gateway ALB chain (gkegw1-*) + argocd NEGs (k8s1-*) in $GCP_PROJECT..."
+        del() { # del <resource-args...>
+          gcloud compute "$@" --project "$GCP_PROJECT" -q 2>/dev/null || true
+        }
+        # In dependency order: forwarding rule -> proxies -> url map -> backend service -> NEGs.
+        for r in $(gcloud compute forwarding-rules list --global --project "$GCP_PROJECT" --filter="name~gkegw" --format="value(name)"); do del forwarding-rules delete "$r" --global; done
+        for r in $(gcloud compute target-https-proxies list --project "$GCP_PROJECT" --filter="name~gkegw" --format="value(name)"); do del target-https-proxies delete "$r"; done
+        for r in $(gcloud compute target-http-proxies  list --project "$GCP_PROJECT" --filter="name~gkegw" --format="value(name)"); do del target-http-proxies delete "$r"; done
+        for r in $(gcloud compute url-maps list --project "$GCP_PROJECT" --filter="name~gkegw" --format="value(name)"); do del url-maps delete "$r"; done
+        for r in $(gcloud compute backend-services list --global --project "$GCP_PROJECT" --filter="name~gkegw" --format="value(name)"); do del backend-services delete "$r" --global; done
+        gcloud compute network-endpoint-groups list --project "$GCP_PROJECT" --filter="name~argocd" --format="value(name,zone)" \
+          | while read -r name zone; do [ -n "$name" ] && del network-endpoint-groups delete "$name" --zone "$zone"; done
+        echo "Done. Now re-run: (cd infra && terragrunt run --all destroy --non-interactive)"
