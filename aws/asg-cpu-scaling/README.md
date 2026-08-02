@@ -61,45 +61,45 @@ the lab cheap — instances reach the SSM/AWS endpoints over the internet gatewa
   running `up`).
 
 ```bash
-task asg:init-env   # creates .env from .env.example (no-op if it already exists)
+task init-env   # creates .env from .env.example (no-op if it already exists)
 $EDITOR .env        # set AWS_REGION and a globally-unique TF_STATE_BUCKET
 ```
 
 > Heads up: this creates real, costed EC2 instances (t3.micro, 1–3 of them). Tear it down with
-> `task asg:down` when you're done.
+> `task down` when you're done.
 
 ## Run it
 
 One-time — create the S3 state bucket:
 
 ```bash
-task asg:state-bootstrap
+task state-bootstrap
 ```
 
 Cost-free checks:
 
 ```bash
-task asg:validate
-task asg:plan
+task validate
+task plan
 ```
 
 Provision:
 
 ```bash
-task asg:up          # IAM role/profile + Auto Scaling group (starts at 1 instance)
-task asg:instances   # list the running instances
+task up          # IAM role/profile + Auto Scaling group (starts at 1 instance)
+task instances   # list the running instances
 ```
 
 Demonstrate scaling — in two terminals:
 
 ```bash
 # terminal 1: watch capacity change
-task asg:watch
+task watch
 
 # terminal 2: drive the load
-task asg:load        # burn CPU on every instance -> average climbs -> group scales OUT to 3
+task load        # burn CPU on every instance -> average climbs -> group scales OUT to 3
 # ...watch desired/in_service climb over the next few minutes...
-task asg:unload      # stop the burn -> average falls -> group scales IN back to 1
+task unload      # stop the burn -> average falls -> group scales IN back to 1
 ```
 
 Scale-out typically begins within a few minutes of sustained load; scale-in is deliberately slower
@@ -109,7 +109,7 @@ Scale-out typically begins within a few minutes of sustained load; scale-in is d
 ## Tear it down
 
 ```bash
-task asg:down
+task down
 ```
 
 ## Learned / decisions

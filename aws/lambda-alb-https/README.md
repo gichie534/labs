@@ -51,7 +51,7 @@ Dependencies: `cert` needs `zone-lookup`; `alb` needs `network` + `cert` + `func
 
 ## Prerequisites
 
-- An AWS account and an S3 bucket for Terraform state (create it with `task lambda-https:state-bootstrap`).
+- An AWS account and an S3 bucket for Terraform state (create it with `task state-bootstrap`).
 - An **existing public Route 53 hosted zone** you own (here `aws.richardbatyrov.com`) whose
   delegation already works. The app record and ACM validation records are created directly in it.
 - `terraform`, `terragrunt` (pinned via tenv), `aws` CLI, `go`, `zip`, `jq`, and Task installed.
@@ -60,7 +60,7 @@ Set the lab's inputs in a local **`.env`** (loaded automatically via Task's dote
 gitignored):
 
 ```bash
-task lambda-https:init-env   # copies .env.example -> .env (no-op if it exists)
+task init-env   # copies .env.example -> .env (no-op if it exists)
 $EDITOR .env                 # fill in region, state bucket, parent zone, app domain, GitHub repo
 ```
 
@@ -77,13 +77,13 @@ GITHUB_REPOSITORY=owner/repo                         # repo allowed to assume th
 ## Stand it up (local)
 
 ```bash
-task lambda-https:state-bootstrap   # one-time: create the S3 state bucket
-task lambda-https:validate          # cost-free (builds the zip, then validates)
-task lambda-https:plan              # cost-free
-task lambda-https:up                # VPC, ACM cert, Lambda, ALB (HTTPS, lambda target), CI role, DNS
+task state-bootstrap   # one-time: create the S3 state bucket
+task validate          # cost-free (builds the zip, then validates)
+task plan              # cost-free
+task up                # VPC, ACM cert, Lambda, ALB (HTTPS, lambda target), CI role, DNS
 
-task lambda-https:verify            # GET https://$APP_DOMAIN/
-task lambda-https:endpoint          # prints https://$APP_DOMAIN and the ALB DNS name
+task verify            # GET https://$APP_DOMAIN/
+task endpoint          # prints https://$APP_DOMAIN and the ALB DNS name
 ```
 
 Unlike the ECS lab (whose service can point at an image tag that doesn't exist yet), a Lambda needs a
@@ -91,13 +91,13 @@ real artifact at create time — so `up` builds the initial `bootstrap` zip and 
 after `up`. Steady-state code changes are shipped by `deploy`/CI:
 
 ```bash
-task lambda-https:all               # = deploy -> verify  (build zip, update-function-code, GET)
+task all               # = deploy -> verify  (build zip, update-function-code, GET)
 ```
 
 ## Wire GitHub Actions (one-time)
 
 ```bash
-task lambda-https:ci-config
+task ci-config
 # AWS_ROLE_ARN=arn:aws:iam::<account>:role/lambda-alb-https-github_deployer
 ```
 
@@ -118,7 +118,7 @@ OIDC.
 ## Tear it down
 
 ```bash
-task lambda-https:down   # destroys all infra (DNS/cert records included)
+task down   # destroys all infra (DNS/cert records included)
 ```
 
 ## Security caveats

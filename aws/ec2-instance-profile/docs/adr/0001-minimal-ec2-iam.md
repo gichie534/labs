@@ -60,7 +60,7 @@ bit-for-bit reproducibility might pin an AMI ID instead; for a teaching lab, por
 ## Consequences
 
 - A real, costed EC2 instance (t3.micro) exists for the lab's lifetime — tear down with
-  `task ec2-profile:down`.
+  `task down`.
 - The lab pins two module tags: `aws-iam-instance-profile-v0.1.0` and `aws-ec2-instance-v0.1.0`.
 - Requires a default VPC in the target region (the `lookups` unit assumes one exists).
 - Because the AMI is resolved dynamically, a new AL2023 release can change the AMI ID and cause a

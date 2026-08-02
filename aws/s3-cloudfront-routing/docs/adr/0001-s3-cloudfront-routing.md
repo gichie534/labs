@@ -59,7 +59,7 @@ is lab-specific glue, so `seed` is a local unit, ordered after the buckets exist
 ## Consequences
 
 - Real, costed resources exist for the lab's lifetime: one CloudFront distribution and three S3
-  buckets (plus objects). Tear down with `task cdn:down` (`force_destroy = true` lets the non-empty
+  buckets (plus objects). Tear down with `task down` (`force_destroy = true` lets the non-empty
   buckets be destroyed).
 - A fresh distribution takes several minutes to deploy to the edge before `verify` will pass.
 - The lab pins two module tags: `aws-cloudfront-s3-v0.1.0` and `aws-s3-bucket-v0.1.0`.

@@ -92,47 +92,47 @@ export TF_STATE_BUCKET=my-tf-state-bucket
 > `m5.xlarge` EC2 nodes by default). The large instances are deliberate — they're where warmed-ENI
 > IP waste is worth showing. 2 nodes = 8 vCPUs, which fits a fresh account's default On-Demand vCPU
 > quota; raise the *Running On-Demand Standard instances* quota (L-1216C47A) and pass `NODE_SCALE=3+`
-> for more. Tear it down with `task eks-cni:down` when you're done.
+> for more. Tear it down with `task down` when you're done.
 
 ## Run it
 
 One-time setup — create the S3 state bucket (recent Terragrunt no longer auto-creates it):
 
 ```bash
-task eks-cni:state-bootstrap   # creates TF_STATE_BUCKET; run once with admin creds
+task state-bootstrap   # creates TF_STATE_BUCKET; run once with admin creds
 ```
 
 Cost-free checks:
 
 ```bash
-task eks-cni:validate
-task eks-cni:plan
+task validate
+task plan
 ```
 
 Then walk the phases (each `report-*` prints to your terminal and writes `reports/<phase>.json`):
 
 ```bash
-task eks-cni:up                # phase 1: VPC + EKS + 1 node
-task eks-cni:report-baseline
+task up                # phase 1: VPC + EKS + 1 node
+task report-baseline
 
-task eks-cni:scale             # phase 2: scale to 2 nodes (NODE_SCALE=N to change)
-task eks-cni:report-scaled
+task scale             # phase 2: scale to 2 nodes (NODE_SCALE=N to change)
+task report-scaled
 
-task eks-cni:tune              # phase 3: WARM_IP_TARGET=1 MINIMUM_IP_TARGET=4 (override via env)
-task eks-cni:report-tuned
+task tune              # phase 3: WARM_IP_TARGET=1 MINIMUM_IP_TARGET=4 (override via env)
+task report-tuned
 
-task eks-cni:test              # assert: tuning reclaimed IPs (reads reports/)
+task test              # assert: tuning reclaimed IPs (reads reports/)
 ```
 
 Or run the whole sequence (including the assertion) in one go:
 
 ```bash
-task eks-cni:walk
+task walk
 ```
 
 Compare `reports/phase-2-scaled.json` (untuned) with `reports/phase-3-tuned.json`: with the same
 node count, `total_secondary_ips` drops and `total_free_private_ips` rises. That delta is exactly
-what `task eks-cni:test` asserts.
+what `task test` asserts.
 
 ## Three ways to run the same sequence
 
@@ -147,14 +147,14 @@ what `task eks-cni:test` asserts.
 
    ```bash
    export GITHUB_REPOSITORY=owner/repo   # the repo allowed to assume the role
-   task eks-cni:ci-bootstrap             # creates the GitHub OIDC provider + CI role
-   task eks-cni:ci-config                # prints AWS_ROLE_ARN=...
+   task ci-bootstrap             # creates the GitHub OIDC provider + CI role
+   task ci-config                # prints AWS_ROLE_ARN=...
    ```
 
    Then set repo variables `AWS_REGION`, `TF_STATE_BUCKET`, and `AWS_ROLE_ARN` (from `ci-config`).
    The bootstrap role is granted broad AWS-managed policies because the workflow creates and destroys
    a whole cluster — a deliberate lab-only tradeoff (see the ADR). Remove it later with
-   `task eks-cni:ci-bootstrap-down`.
+   `task ci-bootstrap-down`.
 
    > An AWS account holds only one OIDC provider per issuer URL. If `token.actions.githubusercontent.com`
    > already exists in your account, `ci-bootstrap` will collide — import the existing provider or
@@ -166,7 +166,7 @@ what `task eks-cni:test` asserts.
 ## Tear it down
 
 ```bash
-task eks-cni:down
+task down
 ```
 
 ## Learned / decisions

@@ -76,51 +76,51 @@ sees — no session-tag plumbing needed. See `docs/adr/0001-abac-over-rbac-s3.md
 - An AWS account with a **default VPC** in your region, and an S3 bucket for Terraform state
   (S3-native locking — no DynamoDB).
 - `terraform`, `terragrunt` (pinned via tenv), `aws` CLI, and Task installed.
-- For `task ec2-abac:verify` / `show-proof`: nothing extra (they use SSM `send-command`, not the
+- For `task verify` / `show-proof`: nothing extra (they use SSM `send-command`, not the
   Session Manager plugin).
 - The module tags above published in `gichie534/infrastructure-catalog` — including
   **`aws-s3-bucket-v0.1.0`** (new for this lab).
 
 ```bash
-task ec2-abac:init-env   # creates .env from .env.example (no-op if it already exists)
+task init-env   # creates .env from .env.example (no-op if it already exists)
 $EDITOR .env             # set AWS_REGION, a globally-unique TF_STATE_BUCKET, and a globally-unique ABAC_BUCKET
 ```
 
 > Heads up: this creates real, costed resources (two t3.micro instances + an S3 bucket). Tear it
-> down with `task ec2-abac:down` when you're done.
+> down with `task down` when you're done.
 
 ## Run it
 
 One-time — create the S3 state bucket:
 
 ```bash
-task ec2-abac:state-bootstrap
+task state-bootstrap
 ```
 
 Cost-free checks:
 
 ```bash
-task ec2-abac:validate
-task ec2-abac:plan
+task validate
+task plan
 ```
 
 Provision, then prove ABAC:
 
 ```bash
-task ec2-abac:up        # IAM roles/profiles + bucket + ABAC policy + probe object + both instances
-task ec2-abac:verify    # runs the same S3 read on both instances over SSM and asserts allowed=OK, denied=AccessDenied
+task up        # IAM roles/profiles + bucket + ABAC policy + probe object + both instances
+task verify    # runs the same S3 read on both instances over SSM and asserts allowed=OK, denied=AccessDenied
 ```
 
 `verify` is the assertion. `show-proof` is the same idea read from each instance's boot-time log:
 
 ```bash
-task ec2-abac:show-proof   # cats /var/log/abac-demo.log from both instances via SSM
+task show-proof   # cats /var/log/abac-demo.log from both instances via SSM
 ```
 
 ## Tear it down
 
 ```bash
-task ec2-abac:down
+task down
 ```
 
 ## Learned / decisions

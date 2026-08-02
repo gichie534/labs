@@ -39,8 +39,8 @@ exiting**, and its pod sets `terminationGracePeriodSeconds: 3600`. So when you d
 2. The container ignores the signal and keeps logging — now tagged `phase=terminating` — for up to
    an hour, until the kubelet gives up and `SIGKILL`s it.
 3. During that window you compare two things: the pod's **own stdout** (ground truth,
-   `task vector-logs:logs-source`) against **what the aggregator collected**
-   (`task vector-logs:logs`). If `phase=terminating` lines reach the aggregator, the agent keeps
+   `task logs-source`) against **what the aggregator collected**
+   (`task logs`). If `phase=terminating` lines reach the aggregator, the agent keeps
    collecting through termination; if they stop at the delete, it doesn't.
 
 We delete the **Deployment** (not just the pod) so no replacement pod is created to muddy the
@@ -54,61 +54,61 @@ picture. See `docs/adr/0001-observing-terminating-pod-logs.md` for the reasoning
 - The module tags above published in `gichie534/infrastructure-catalog`.
 
 > Heads up: this creates real, costed resources (an EKS control plane, a NAT gateway, and 2
-> `t3.medium` EC2 nodes). Tear it down with `task vector-logs:down` when you're done.
+> `t3.medium` EC2 nodes). Tear it down with `task down` when you're done.
 
 ## Run it
 
 Set up your local env, then create the state bucket once:
 
 ```bash
-task vector-logs:init-env      # writes .env from .env.example — then edit .env
+task init-env      # writes .env from .env.example — then edit .env
 # set AWS_REGION and TF_STATE_BUCKET in .env
-task vector-logs:state-bootstrap
+task state-bootstrap
 ```
 
 Cost-free checks:
 
 ```bash
-task vector-logs:validate
-task vector-logs:plan
+task validate
+task plan
 ```
 
 Stand it up and deploy the in-cluster pieces:
 
 ```bash
-task vector-logs:up            # VPC + EKS + nodes (creates cloud resources)
-task vector-logs:deploy        # Vector agent + aggregator (Helm) + the noisy-terminator workload
-task vector-logs:status        # sanity: workload pod Running, both Vector pods Ready
+task up            # VPC + EKS + nodes (creates cloud resources)
+task deploy        # Vector agent + aggregator (Helm) + the noisy-terminator workload
+task status        # sanity: workload pod Running, both Vector pods Ready
 ```
 
 Confirm collection is working while the pod is healthy:
 
 ```bash
-task vector-logs:logs          # aggregator's collected view — you should see phase=running lines
+task logs          # aggregator's collected view — you should see phase=running lines
 ```
 
 Now run the experiment. In one terminal watch the pod state, in another watch the collected logs:
 
 ```bash
-task vector-logs:watch-pod     # terminal 1 — will flip to Terminating and stay there
-task vector-logs:logs          # terminal 2 — aggregator's collected view
+task watch-pod     # terminal 1 — will flip to Terminating and stay there
+task logs          # terminal 2 — aggregator's collected view
 
-task vector-logs:terminate     # delete the Deployment -> the pod enters a long Terminating
+task terminate     # delete the Deployment -> the pod enters a long Terminating
 ```
 
 Then read the result:
 
 - The pod stays `Terminating` (grace period 3600s).
-- `task vector-logs:logs-source` shows the pod itself is still emitting `phase=terminating` lines.
-- `task vector-logs:logs` shows what the **aggregator actually received**. Whether the
+- `task logs-source` shows the pod itself is still emitting `phase=terminating` lines.
+- `task logs` shows what the **aggregator actually received**. Whether the
   `phase=terminating` lines appear there — and for how long after the delete — is the hypothesis
   answer. Note the last `#N` line number that made it through versus the pod's current line number.
 
 ## Tear it down
 
 ```bash
-task vector-logs:clean-k8s     # optional: remove just the in-cluster pieces, keep the cluster
-task vector-logs:down          # destroy all infra
+task clean-k8s     # optional: remove just the in-cluster pieces, keep the cluster
+task down          # destroy all infra
 ```
 
 ## Learned / decisions

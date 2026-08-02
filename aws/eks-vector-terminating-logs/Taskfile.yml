@@ -1,5 +1,10 @@
 version: '3'
 
+# Runtime inputs load once from the lab-root .env (top-level dotenv, resolved relative to
+# the lab root regardless of a task's `dir:`). A missing .env is harmless, so cost-free
+# tasks still run on a clean checkout.
+dotenv: ['.env']
+
 # Lifecycle for the aws/eks-vector-terminating-logs lab.
 #
 # Infra is Terragrunt (network -> cluster). The in-cluster pieces (Vector agent + aggregator via the
@@ -44,7 +49,6 @@ tasks:
   validate:
     desc: Validate every infra unit (cost-free)
     dir: infra
-    dotenv: ['../.env']
     cmds: [terragrunt run --all validate]
 
   lint:
@@ -61,14 +65,12 @@ tasks:
   plan:
     desc: Plan all infra units (cost-free)
     dir: infra
-    dotenv: ['../.env']
     cmds: [terragrunt run --all plan]
 
   # --- State backend bootstrap (run once before the first validate/plan/up) -----------------------
   state-bootstrap:
     desc: 'Create the S3 state bucket (run once; needs TF_STATE_BUCKET + admin creds)'
     dir: infra
-    dotenv: ['../.env']
     cmds:
       - terragrunt backend bootstrap --all --non-interactive
 
@@ -76,12 +78,10 @@ tasks:
   up:
     desc: 'Provision VPC + EKS + a small node group (creates cloud resources)'
     dir: infra
-    dotenv: ['../.env']
     cmds: [terragrunt run --all apply --non-interactive]
 
   kubeconfig:
     desc: Point kubectl at the lab cluster
-    dotenv: ['.env']
     cmds:
       - aws eks update-kubeconfig --name {{.CLUSTER}} --region {{.REGION}}
 
@@ -154,5 +154,4 @@ tasks:
   down:
     desc: Destroy all infra (also removes everything running on the cluster)
     dir: infra
-    dotenv: ['../.env']
     cmds: [terragrunt run --all destroy --non-interactive]

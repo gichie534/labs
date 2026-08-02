@@ -62,7 +62,7 @@ AMI ID and cause a plan to want to replace an instance — acceptable for a teac
 ## Consequences
 
 - Real, costed resources exist for the lab's lifetime: two t3.micro instances and one ALB. Tear down
-  with `task alb:down`.
+  with `task down`.
 - The lab pins two module tags: `aws-ec2-instance-v0.1.0` and `aws-alb-v0.1.0`.
 - Requires a default VPC with subnets in ≥2 AZs in the target region (an ALB needs ≥2 AZs).
 - Host-based routing is only exercised via explicit `Host` headers; there is no real DNS.

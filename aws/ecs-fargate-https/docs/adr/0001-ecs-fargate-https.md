@@ -63,7 +63,7 @@ cost-for-simplicity tradeoff here, documented so it isn't copied blindly.
 The clean split mirrors the GKE lab's "Terraform makes the cluster, Helm ships the app". The
 `ecs-fargate-service` module creates the service with a **bootstrap image** and then sets
 `lifecycle.ignore_changes = [task_definition, desired_count]`, so Terraform stops managing which
-revision runs. The **GitHub Actions pipeline** (and `task ecs-https:deploy` locally) registers new
+revision runs. The **GitHub Actions pipeline** (and `task deploy` locally) registers new
 task-definition revisions with real image tags and updates the service; Terraform never reverts them
 on the next `apply`. The bootstrap image tag doesn't need to exist at `up` time — the service simply
 has no healthy tasks until the first deploy pushes and rolls a real image.

@@ -71,34 +71,34 @@ lambda-vpc:build` compiles it to a `bootstrap` binary and zips it to `build/func
 - The module tags above published in `gichie534/infrastructure-catalog`.
 
 ```bash
-task lambda-vpc:init-env   # creates .env from .env.example (no-op if it already exists)
+task init-env   # creates .env from .env.example (no-op if it already exists)
 $EDITOR .env               # set AWS_REGION and a globally-unique TF_STATE_BUCKET
 ```
 
 > Heads up: this creates real, costed resources (a t3.micro EC2 instance and a Lambda function).
 > There is **no** NAT gateway, so the ongoing cost is just the instance. Tear it down with
-> `task lambda-vpc:down` when you're done.
+> `task down` when you're done.
 
 ## Run it
 
 One-time — create the S3 state bucket:
 
 ```bash
-task lambda-vpc:state-bootstrap
+task state-bootstrap
 ```
 
 Cost-free checks (these build the zip first):
 
 ```bash
-task lambda-vpc:validate
-task lambda-vpc:plan
+task validate
+task plan
 ```
 
 Provision, then see the proof:
 
 ```bash
-task lambda-vpc:up        # VPC, SGs, private EC2, VPC-attached Lambda
-task lambda-vpc:invoke    # invokes the Lambda; prints the EC2's JSON identity it read
+task up        # VPC, SGs, private EC2, VPC-attached Lambda
+task invoke    # invokes the Lambda; prints the EC2's JSON identity it read
 ```
 
 A successful `invoke` prints something like:
@@ -120,7 +120,7 @@ A successful `invoke` prints something like:
 ## Tear it down
 
 ```bash
-task lambda-vpc:down
+task down
 ```
 
 ## Learned / decisions

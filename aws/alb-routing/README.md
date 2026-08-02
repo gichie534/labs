@@ -60,40 +60,40 @@ so clients must reach them through the ALB — and scoping to the CIDR (rather t
 - The module tags above published in `gichie534/infrastructure-catalog`.
 
 ```bash
-task alb:init-env   # creates .env from .env.example (no-op if it already exists)
+task init-env   # creates .env from .env.example (no-op if it already exists)
 $EDITOR .env        # set AWS_REGION and a globally-unique TF_STATE_BUCKET
 ```
 
 > Heads up: this creates real, costed resources (two t3.micro instances + an ALB). Tear it down with
-> `task alb:down` when you're done.
+> `task down` when you're done.
 
 ## Run it
 
 One-time — create the S3 state bucket:
 
 ```bash
-task alb:state-bootstrap
+task state-bootstrap
 ```
 
 Cost-free checks:
 
 ```bash
-task alb:validate
-task alb:plan
+task validate
+task plan
 ```
 
 Provision, then prove the routing:
 
 ```bash
-task alb:up      # two instances + the ALB and its rules
-task alb:demo    # curls the ALB for both routing styles (+ the 404 fallback)
+task up      # two instances + the ALB and its rules
+task demo    # curls the ALB for both routing styles (+ the 404 fallback)
 ```
 
 `demo` may show the 404 fallback for a minute or two right after `up` while the targets pass their
 first health checks; re-run it once they're healthy. You can also grab the DNS name directly:
 
 ```bash
-task alb:dns
+task dns
 curl "http://$(task -s alb:dns)/a/"
 curl -H "Host: b.alb.lab" "http://$(task -s alb:dns)/"
 ```
@@ -101,7 +101,7 @@ curl -H "Host: b.alb.lab" "http://$(task -s alb:dns)/"
 ## Tear it down
 
 ```bash
-task alb:down
+task down
 ```
 
 ## Learned / decisions

@@ -1,5 +1,10 @@
 version: '3'
 
+# Runtime inputs load once from the lab-root .env (top-level dotenv, resolved relative to
+# the lab root regardless of a task's `dir:`). A missing .env is harmless, so cost-free
+# tasks still run on a clean checkout.
+dotenv: ['.env']
+
 # Lifecycle for the aws/ec2-instance-profile lab — a minimal reference for wiring IAM to EC2.
 #
 # It stands up an EC2 instance whose instance profile grants exactly two things: SSM Session Manager
@@ -40,7 +45,6 @@ tasks:
   validate:
     desc: Validate every infra unit (cost-free)
     dir: infra
-    dotenv: ['../.env']
     cmds: [terragrunt run --all validate]
 
   lint:
@@ -51,26 +55,22 @@ tasks:
   plan:
     desc: Plan all infra units (cost-free)
     dir: infra
-    dotenv: ['../.env']
     cmds: [terragrunt run --all plan]
 
   state-bootstrap:
     desc: 'Create the S3 state bucket (run once; needs TF_STATE_BUCKET + admin creds)'
     dir: infra
-    dotenv: ['../.env']
     cmds:
       - terragrunt backend bootstrap --all --non-interactive
 
   up:
     desc: 'Provision the IAM role/profile + EC2 instance (creates cloud resources)'
     dir: infra
-    dotenv: ['../.env']
     cmds: [terragrunt run --all apply --non-interactive]
 
   session:
     desc: 'Open an SSM Session Manager shell on the instance (needs the AWS CLI Session Manager plugin)'
     dir: infra/instance
-    dotenv: ['../../.env']
     cmds:
       - |
         ID="$(terragrunt output -raw id)"
@@ -80,7 +80,6 @@ tasks:
   show-proof:
     desc: 'Print the boot-time `aws s3 ls` demo log from the instance via SSM (proves the profile works)'
     dir: infra/instance
-    dotenv: ['../../.env']
     cmds:
       - |
         set -euo pipefail
@@ -99,5 +98,4 @@ tasks:
   down:
     desc: Destroy all infra
     dir: infra
-    dotenv: ['../.env']
     cmds: [terragrunt run --all destroy --non-interactive]

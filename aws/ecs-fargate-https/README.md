@@ -53,7 +53,7 @@ Dependencies: `cert` needs `zone-lookup`; `alb` needs `network` + `cert`; `ecs/s
 
 ## Prerequisites
 
-- An AWS account and an S3 bucket for Terraform state (create it with `task ecs-https:state-bootstrap`).
+- An AWS account and an S3 bucket for Terraform state (create it with `task state-bootstrap`).
 - An **existing public Route 53 hosted zone** you own (here `aws.richardbatyrov.com`) whose
   delegation already works. The app record and ACM validation records are created directly in it.
 - `terraform`, `terragrunt` (pinned via tenv), `aws` CLI, `docker`, `jq`, `go`, and Task installed.
@@ -62,7 +62,7 @@ Set the lab's inputs in a local **`.env`** (loaded automatically via Task's dote
 gitignored):
 
 ```bash
-task ecs-https:init-env   # copies .env.example -> .env (no-op if it exists)
+task init-env   # copies .env.example -> .env (no-op if it exists)
 $EDITOR .env              # fill in region, state bucket, parent zone, app domain, GitHub repo
 ```
 
@@ -79,24 +79,24 @@ GITHUB_REPOSITORY=owner/repo                      # repo allowed to assume the C
 ## Stand it up (local)
 
 ```bash
-task ecs-https:state-bootstrap   # one-time: create the S3 state bucket
-task ecs-https:validate          # cost-free
-task ecs-https:plan              # cost-free
-task ecs-https:up                # VPC, ECR, cluster, ACM cert, ALB (HTTPS), Fargate service, CI role, DNS
+task state-bootstrap   # one-time: create the S3 state bucket
+task validate          # cost-free
+task plan              # cost-free
+task up                # VPC, ECR, cluster, ACM cert, ALB (HTTPS), Fargate service, CI role, DNS
 
 # build + push the image, register a task-def revision, roll the service, then GET the HTTPS endpoint
-task ecs-https:all               # = deploy -> verify
-task ecs-https:endpoint          # prints https://$APP_DOMAIN and the ALB DNS name
+task all               # = deploy -> verify
+task endpoint          # prints https://$APP_DOMAIN and the ALB DNS name
 ```
 
 The service is created with a `:bootstrap` image that doesn't exist yet, so it has no healthy tasks
-until the first `deploy` pushes and rolls a real image. `task ecs-https:all` prints the greeting
+until the first `deploy` pushes and rolls a real image. `task all` prints the greeting
 fetched over HTTPS on success.
 
 ## Wire GitHub Actions (one-time)
 
 ```bash
-task ecs-https:ci-config
+task ci-config
 # AWS_ROLE_ARN=arn:aws:iam::<account>:role/ecs-fargate-https-github_deployer
 ```
 
@@ -118,7 +118,7 @@ keyless via OIDC.
 ## Tear it down
 
 ```bash
-task ecs-https:down   # destroys all infra (ECR force_delete and DNS/cert records included)
+task down   # destroys all infra (ECR force_delete and DNS/cert records included)
 ```
 
 ## Security caveats

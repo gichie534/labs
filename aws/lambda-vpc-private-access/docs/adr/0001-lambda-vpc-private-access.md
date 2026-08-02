@@ -70,7 +70,7 @@ no resources.
 ## Consequences
 
 - Real, costed resources exist for the lab's lifetime: a t3.micro EC2 instance and a Lambda function
-  (no NAT gateway). Tear down with `task lambda-vpc:down`.
+  (no NAT gateway). Tear down with `task down`.
 - The lab pins four module tags: `aws-vpc-v0.1.0`, `aws-security-group-v0.1.0`,
   `aws-ec2-instance-v0.1.0`, and `aws-lambda-v0.1.0`.
 - Because the AMI is resolved dynamically, a new AL2023 release can change the AMI ID and cause a

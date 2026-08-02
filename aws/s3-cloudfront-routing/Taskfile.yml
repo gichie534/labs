@@ -1,5 +1,10 @@
 version: '3'
 
+# Runtime inputs load once from the lab-root .env (top-level dotenv, resolved relative to
+# the lab root regardless of a task's `dir:`). A missing .env is harmless, so cost-free
+# tasks still run on a clean checkout.
+dotenv: ['.env']
+
 # Lifecycle for the aws/s3-cloudfront-routing lab — a CloudFront distribution that routes by path to
 # three PRIVATE S3 buckets (default -> static site, *.jpg -> jpg bucket, *.pdf -> pdf bucket), all
 # reached via Origin Access Control.
@@ -36,7 +41,6 @@ tasks:
   validate:
     desc: Validate every infra unit (cost-free)
     dir: infra
-    dotenv: ['../.env']
     cmds: [terragrunt run --all validate]
 
   lint:
@@ -47,26 +51,22 @@ tasks:
   plan:
     desc: Plan all infra units (cost-free)
     dir: infra
-    dotenv: ['../.env']
     cmds: [terragrunt run --all plan]
 
   state-bootstrap:
     desc: 'Create the S3 state bucket (run once; needs TF_STATE_BUCKET + admin creds)'
     dir: infra
-    dotenv: ['../.env']
     cmds:
       - terragrunt backend bootstrap --all --non-interactive
 
   up:
     desc: 'Provision the CloudFront distribution, the three private buckets, and upload assets + index.html (creates cloud resources)'
     dir: infra
-    dotenv: ['../.env']
     cmds: [terragrunt run --all apply --non-interactive]
 
   url:
     desc: 'Print the CloudFront URL to open in a browser'
     dir: infra
-    dotenv: ['../.env']
     cmds:
       - |
         set -eu
@@ -75,7 +75,6 @@ tasks:
   verify:
     desc: 'Fetch / , a .jpg, and a .pdf through CloudFront and assert each is served (routing works)'
     dir: infra
-    dotenv: ['../.env']
     cmds:
       - |
         set -euo pipefail
@@ -107,5 +106,4 @@ tasks:
   down:
     desc: Destroy all infra
     dir: infra
-    dotenv: ['../.env']
     cmds: [terragrunt run --all destroy --non-interactive]

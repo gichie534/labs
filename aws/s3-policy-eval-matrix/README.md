@@ -74,45 +74,45 @@ here lives in a single account. See `docs/adr/0001-s3-policy-eval-matrix.md`.
 - The module tags above published in `gichie534/infrastructure-catalog`.
 
 ```bash
-task s3-eval:init-env   # creates .env from .env.example (no-op if it already exists)
+task init-env   # creates .env from .env.example (no-op if it already exists)
 $EDITOR .env            # set AWS_REGION, a globally-unique TF_STATE_BUCKET, and a globally-unique DEMO_BUCKET
 ```
 
 > Heads up: this creates real, costed resources (four t3.micro instances + an S3 bucket). Tear it
-> down with `task s3-eval:down` when you're done.
+> down with `task down` when you're done.
 
 ## Run it
 
 One-time — create the S3 state bucket:
 
 ```bash
-task s3-eval:state-bootstrap
+task state-bootstrap
 ```
 
 Cost-free checks:
 
 ```bash
-task s3-eval:validate
-task s3-eval:plan
+task validate
+task plan
 ```
 
 Provision, then prove the matrix:
 
 ```bash
-task s3-eval:up        # four IAM roles/profiles + bucket + matrix policy + probe object + four instances
-task s3-eval:verify    # runs the same S3 read on all four instances over SSM and asserts each cell's expected result
+task up        # four IAM roles/profiles + bucket + matrix policy + probe object + four instances
+task verify    # runs the same S3 read on all four instances over SSM and asserts each cell's expected result
 ```
 
 `verify` is the assertion. `show-proof` is the same idea read from each instance's boot-time log:
 
 ```bash
-task s3-eval:show-proof   # cats /var/log/s3-eval-demo.log from all four instances via SSM
+task show-proof   # cats /var/log/s3-eval-demo.log from all four instances via SSM
 ```
 
 ## Tear it down
 
 ```bash
-task s3-eval:down
+task down
 ```
 
 ## Learned / decisions

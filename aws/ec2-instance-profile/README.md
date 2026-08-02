@@ -57,37 +57,37 @@ them as outputs, because Terragrunt `inputs` can't perform data lookups themselv
 - An AWS account with a **default VPC** in your region, and an S3 bucket for Terraform state
   (S3-native locking — no DynamoDB).
 - `terraform`, `terragrunt` (pinned via tenv), `aws` CLI, and Task installed.
-- For `task ec2-profile:session`: the AWS CLI **Session Manager plugin**.
+- For `task session`: the AWS CLI **Session Manager plugin**.
 - The module tags above published in `gichie534/infrastructure-catalog`.
 
 ```bash
-task ec2-profile:init-env   # creates .env from .env.example (no-op if it already exists)
+task init-env   # creates .env from .env.example (no-op if it already exists)
 $EDITOR .env                # set AWS_REGION and a globally-unique TF_STATE_BUCKET
 ```
 
 > Heads up: this creates a real, costed EC2 instance (t3.micro by default). Tear it down with
-> `task ec2-profile:down` when you're done.
+> `task down` when you're done.
 
 ## Run it
 
 One-time — create the S3 state bucket:
 
 ```bash
-task ec2-profile:state-bootstrap
+task state-bootstrap
 ```
 
 Cost-free checks:
 
 ```bash
-task ec2-profile:validate
-task ec2-profile:plan
+task validate
+task plan
 ```
 
 Provision, then see the proof:
 
 ```bash
-task ec2-profile:up            # IAM role/profile + EC2 instance
-task ec2-profile:show-proof    # prints the boot-time `aws s3 ls` log from the instance via SSM
+task up            # IAM role/profile + EC2 instance
+task show-proof    # prints the boot-time `aws s3 ls` log from the instance via SSM
 ```
 
 `show-proof` reads `/var/log/s3-ls-demo.log`, which contains the instance's own caller identity (the
@@ -95,13 +95,13 @@ role) and the `aws s3 ls` output — produced with no credentials on the box. Yo
 interactive shell:
 
 ```bash
-task ec2-profile:session       # SSM Session Manager shell (no SSH)
+task session       # SSM Session Manager shell (no SSH)
 ```
 
 ## Tear it down
 
 ```bash
-task ec2-profile:down
+task down
 ```
 
 ## Learned / decisions

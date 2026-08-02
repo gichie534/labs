@@ -1,5 +1,10 @@
 version: '3'
 
+# Runtime inputs load once from the lab-root .env (top-level dotenv, resolved relative to
+# the lab root regardless of a task's `dir:`). A missing .env is harmless, so cost-free
+# tasks still run on a clean checkout.
+dotenv: ['.env']
+
 # Lifecycle for the aws/serverless-ai-gallery lab.
 #
 # An AI image gallery: a Go static-server container on ECS Fargate behind an HTTPS ALB serves the
@@ -20,8 +25,7 @@ version: '3'
 # Only `up` and `deploy` create/modify cloud resources. fmt/validate/plan/package are cost-free.
 #
 # CONFIG: lab inputs are loaded from a local `.env` via Task's dotenv. Copy `.env.example` to `.env`
-# and fill it in; `.env` is gitignored. Because the root Taskfile includes this one, `dotenv:` is
-# declared per-task; tasks that `dir: infra` load `['../.env']`, the rest load `['.env']`.
+# and fill it in; `.env` is gitignored.
 
 vars:
   GALLERY_DIR: app/gallery
@@ -78,7 +82,6 @@ tasks:
     desc: Validate every infra unit (cost-free)
     deps: [package]
     dir: infra
-    dotenv: ['../.env']
     cmds: [terragrunt run --all validate]
 
   lint:
@@ -92,13 +95,11 @@ tasks:
     desc: Plan all infra units (cost-free)
     deps: [package]
     dir: infra
-    dotenv: ['../.env']
     cmds: [terragrunt run --all plan]
 
   state-bootstrap:
     desc: 'Create the S3 state bucket (run once; needs TF_STATE_BUCKET + admin creds)'
     dir: infra
-    dotenv: ['../.env']
     cmds:
       - terragrunt backend bootstrap --all --non-interactive
 
@@ -106,7 +107,6 @@ tasks:
     desc: 'Provision all infra (creates cloud resources)'
     deps: [package]
     dir: infra
-    dotenv: ['../.env']
     cmds: [terragrunt run --all apply --non-interactive]
 
   build:
@@ -117,7 +117,6 @@ tasks:
   deploy:
     desc: Push the gallery image + roll the service, and ship new Lambda code (mirrors the CI pipeline)
     deps: [build, package]
-    dotenv: ['.env']
     cmds:
       - |
         set -euo pipefail
@@ -159,7 +158,6 @@ tasks:
 
   verify:
     desc: GET the public HTTPS endpoint
-    dotenv: ['.env']
     cmds:
       - |
         set -euo pipefail
@@ -184,7 +182,6 @@ tasks:
 
   endpoint:
     desc: Print the gallery URL, the ALB DNS name, and the Lambda Function URLs
-    dotenv: ['.env']
     cmds:
       - |
         echo "gallery: https://${APP_DOMAIN:-<APP_DOMAIN unset>}/"
@@ -196,7 +193,6 @@ tasks:
   ci-config:
     desc: Print the IAM role ARN to set as the GitHub Actions AWS_ROLE_ARN variable
     dir: infra/deployer-oidc
-    dotenv: ['../../.env']
     cmds:
       - |
         echo "Set this as a GitHub Actions repository variable:"
@@ -216,5 +212,4 @@ tasks:
   down:
     desc: Destroy all infra
     dir: infra
-    dotenv: ['../.env']
     cmds: [terragrunt run --all destroy --non-interactive]

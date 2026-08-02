@@ -66,7 +66,7 @@ against what the aggregator collected.
 ## Consequences
 
 - Real, costed resources (EKS control plane, a NAT gateway, 2 EC2 nodes) exist for the lab's
-  lifetime — tear down with `task vector-logs:down`.
+  lifetime — tear down with `task down`.
 - The lab pins two module tags — `aws-vpc-v0.1.0`, `aws-eks-v0.1.0` — and the Vector Helm chart
   `0.57.0`.
 - If you wait out the full hour, the container is SIGKILLed and the pod finally disappears; run the

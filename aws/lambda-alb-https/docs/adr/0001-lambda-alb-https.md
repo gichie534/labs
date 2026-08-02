@@ -64,7 +64,7 @@ everything else 404s).
 
 Mirroring the ECS lab's "Terraform makes the infra, CI ships the app": the `aws/lambda` module
 creates the function and then, with **`ignore_code_changes = true`**, stops managing the deployment
-package. The **GitHub Actions pipeline** (and `task lambda-https:deploy` locally) ships new code with
+package. The **GitHub Actions pipeline** (and `task deploy` locally) ships new code with
 **`aws lambda update-function-code`**; Terraform never reverts it on the next apply.
 
 One honest difference from the ECS lab: ECS could create a service pointing at a `:bootstrap` image

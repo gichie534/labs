@@ -64,7 +64,7 @@ pinned tag (units marked *local* are lab glue):
 
 ## Prerequisites
 
-- An AWS account and an S3 bucket for Terraform state (`task ai-gallery:state-bootstrap`).
+- An AWS account and an S3 bucket for Terraform state (`task state-bootstrap`).
 - An **existing public Route 53 hosted zone** you own (`your.domain.com`). This lab
   creates a **new child zone** for `$APP_DOMAIN` and delegates it from the parent.
 - **Bedrock model access**: enable the Claude Haiku model in the Bedrock console (Model access) in
@@ -78,20 +78,20 @@ Set the lab's inputs in a local **`.env`** (loaded automatically via Task's dote
 gitignored):
 
 ```bash
-task ai-gallery:init-env    # copies .env.example -> .env (no-op if it exists)
+task init-env    # copies .env.example -> .env (no-op if it exists)
 $EDITOR .env                # region, account id, state bucket, parent zone, app domain, GitHub repo, model, layer
 ```
 
 ## Stand it up (local)
 
 ```bash
-task ai-gallery:state-bootstrap   # one-time: create the S3 state bucket
-task ai-gallery:validate          # cost-free (packages the Lambda zips, then validates)
-task ai-gallery:plan              # cost-free
-task ai-gallery:up                # provision everything
+task state-bootstrap   # one-time: create the S3 state bucket
+task validate          # cost-free (packages the Lambda zips, then validates)
+task plan              # cost-free
+task up                # provision everything
 
-task ai-gallery:all               # = deploy -> verify (push image + roll service, ship Lambdas, GET)
-task ai-gallery:endpoint          # prints the gallery URL, ALB DNS, and the Lambda Function URLs
+task all               # = deploy -> verify (push image + roll service, ship Lambdas, GET)
+task endpoint          # prints the gallery URL, ALB DNS, and the Lambda Function URLs
 ```
 
 Unlike a single container, the Fargate service is created pointing at a `:bootstrap` image tag that
@@ -101,7 +101,7 @@ contrast, are created from real zips during `up` and work immediately.
 ## Wire GitHub Actions (one-time)
 
 ```bash
-task ai-gallery:ci-config
+task ci-config
 # AWS_ROLE_ARN=arn:aws:iam::<account>:role/serverless-ai-gallery-github_deployer
 ```
 
@@ -114,7 +114,7 @@ to the four Lambdas, and GETs the public HTTPS endpoint — keyless via OIDC. Th
 ## Tear it down
 
 ```bash
-task ai-gallery:down   # destroys all infra (buckets are force_destroy; zone/cert/DNS included)
+task down   # destroys all infra (buckets are force_destroy; zone/cert/DNS included)
 ```
 
 ## Security caveats

@@ -91,7 +91,7 @@ permissions) is input.
 
 The role is created in `bootstrap/ci-identity`, deliberately **outside** `infra/`. It's a
 chicken-and-egg resource — CI can't create the role it itself assumes — so it's applied once from an
-admin context (`task eks-cni:ci-bootstrap`) and is not part of the `up`/`down` phase walk. CI's
+admin context (`task ci-bootstrap`) and is not part of the `up`/`down` phase walk. CI's
 `run --all` only ever touches `infra/` (network + cluster).
 
 The role gets broad AWS-managed policies (EKS/EC2/VPC/IAM/S3 admin) plus an inline `eks:*` grant,
@@ -109,7 +109,7 @@ DynamoDB permissions.
 ## Consequences
 
 - Real, costed resources (EKS control plane, NAT gateway, EC2 nodes) exist for the lab's lifetime —
-  tear down with `task eks-cni:down`.
+  tear down with `task down`.
 - The lab pins three module tags: `aws-vpc-v0.1.0`, `aws-eks-v0.1.0`, and `aws-oidc-federation-v0.1.0`.
 - `t3.small` nodes are used to keep ENI/IP limits (and therefore the numbers) small and the cost
   low; the effect is identical on larger instances, just with bigger numbers.

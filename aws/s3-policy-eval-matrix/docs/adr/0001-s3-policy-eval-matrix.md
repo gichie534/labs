@@ -62,7 +62,7 @@ creates no resources.
 ### Proof over SSM, not SSH
 
 All four instances are reached via SSM Session Manager (managed policy
-`AmazonSSMManagedInstanceCore`), so there's no SSH key or inbound rule. `task s3-eval:verify` runs
+`AmazonSSMManagedInstanceCore`), so there's no SSH key or inbound rule. `task verify` runs
 the same `aws s3 cp` on every instance via `ssm send-command` and asserts each cell's expected
 result (allow/deny). Each instance also records the same probe at boot to
 `/var/log/s3-eval-demo.log` (readable with `show-proof`).
@@ -80,7 +80,7 @@ alone.
 ## Consequences
 
 - Real, costed resources exist for the lab's lifetime: four t3.micro instances and an S3 bucket.
-  Tear down with `task s3-eval:down` (`force_destroy = true` lets the non-empty bucket be destroyed).
+  Tear down with `task down` (`force_destroy = true` lets the non-empty bucket be destroyed).
 - The lab pins three module tags: `aws-iam-instance-profile-v0.1.0`, `aws-s3-bucket-v0.1.0`, and
   `aws-ec2-instance-v0.1.0`.
 - Requires a default VPC in the target region (the `lookups` unit assumes one exists).

@@ -54,7 +54,7 @@ Prereqs: AWS credentials, and [tenv](https://github.com/tofuutils/tenv) to honou
 
 ```bash
 # 1. Configure environment
-task cdn:init-env          # creates .env from .env.example
+task init-env          # creates .env from .env.example
 $EDITOR .env               # set AWS_REGION, TF_STATE_BUCKET, BUCKET_PREFIX (all globally unique)
 
 # 2. Add your content
@@ -62,22 +62,22 @@ cp your-image.jpg  app/assets/jpg/
 cp your-doc.pdf    app/assets/pdf/
 
 # 3. (first time only) create the remote-state bucket
-task cdn:state-bootstrap
+task state-bootstrap
 
 # 4. Cost-free checks
-task cdn:fmt
-task cdn:validate
-task cdn:plan
+task fmt
+task validate
+task plan
 
 # 5. Provision (creates cloud resources)
-task cdn:up
+task up
 
 # 6. Open it — wait a few minutes for the distribution to finish deploying
-task cdn:url               # prints the https://... CloudFront URL
-task cdn:verify            # fetches / , a .jpg and a .pdf and asserts routing
+task url               # prints the https://... CloudFront URL
+task verify            # fetches / , a .jpg and a .pdf and asserts routing
 
 # 7. Tear down
-task cdn:down
+task down
 ```
 
 ## Notes

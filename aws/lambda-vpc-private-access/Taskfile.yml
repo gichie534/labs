@@ -1,5 +1,10 @@
 version: '3'
 
+# Runtime inputs load once from the lab-root .env (top-level dotenv, resolved relative to
+# the lab root regardless of a task's `dir:`). A missing .env is harmless, so cost-free
+# tasks still run on a clean checkout.
+dotenv: ['.env']
+
 # Lifecycle for the aws/lambda-vpc-private-access lab — proving a VPC-attached Lambda can reach a
 # private resource.
 #
@@ -52,7 +57,6 @@ tasks:
     desc: Validate every infra unit (cost-free)
     deps: [build]
     dir: infra
-    dotenv: ['../.env']
     cmds: [terragrunt run --all validate]
 
   lint:
@@ -64,13 +68,11 @@ tasks:
     desc: Plan all infra units (cost-free)
     deps: [build]
     dir: infra
-    dotenv: ['../.env']
     cmds: [terragrunt run --all plan]
 
   state-bootstrap:
     desc: 'Create the S3 state bucket (run once; needs TF_STATE_BUCKET + admin creds)'
     dir: infra
-    dotenv: ['../.env']
     cmds:
       - terragrunt backend bootstrap --all --non-interactive
 
@@ -78,7 +80,6 @@ tasks:
     desc: 'Provision the VPC, SGs, private EC2, and VPC-attached Lambda (creates cloud resources)'
     deps: [build]
     dir: infra
-    dotenv: ['../.env']
     cmds: [terragrunt run --all apply --non-interactive]
 
   test:
@@ -89,7 +90,6 @@ tasks:
   invoke:
     desc: 'Invoke the Lambda and print its JSON response (the proof it reached the private EC2)'
     dir: infra/lambda
-    dotenv: ['../../.env']
     cmds:
       - |
         set -euo pipefail
@@ -104,5 +104,4 @@ tasks:
   down:
     desc: Destroy all infra
     dir: infra
-    dotenv: ['../.env']
     cmds: [terragrunt run --all destroy --non-interactive]
