@@ -57,12 +57,12 @@ Dependencies: `cluster` → `network`; `federation` → `cluster` (for the issue
 the queue ARN the role policies scope to).
 
 > **Note:** the `aws/sqs` module must be released as `aws-sqs-v0.1.0` in the catalog before
-> `task gke-sqs:up` will resolve the `queue` unit. While iterating you can point the `queue` unit's
+> `task up` will resolve the `queue` unit. While iterating you can point the `queue` unit's
 > `source` at the local module path (see the comment in `infra/queue/terragrunt.hcl`).
 
 ## Prerequisites
 
-- A GCP project and a GCS bucket for Terraform state (create it with `task gke-sqs:init-state`).
+- A GCP project and a GCS bucket for Terraform state (create it with `task init-state`).
 - AWS credentials in your environment (profile / SSO / env vars) able to create IAM + SQS.
 - `terraform`, `terragrunt` (pinned via tenv), `gcloud`, `aws`, `kubectl`, `helm`, `go`, `docker`,
   `jq`, and Task installed.
@@ -70,7 +70,7 @@ the queue ARN the role policies scope to).
 Copy the env template and fill it in (`.env` is gitignored; shell exports take precedence):
 
 ```bash
-task gke-sqs:init-env   # creates .env from .env.example (no-op if it already exists)
+task init-env   # creates .env from .env.example (no-op if it already exists)
 $EDITOR .env
 ```
 
@@ -88,13 +88,13 @@ matched by the Helm chart — nothing to set.
 ## Stand it up
 
 ```bash
-task gke-sqs:init-state   # one-time: create the GCS bucket for Terraform state
-task gke-sqs:validate     # cost-free
-task gke-sqs:plan         # cost-free
-task gke-sqs:up           # VPC, Autopilot cluster, registry (GCP) + SQS queue, OIDC provider + 2 roles (AWS)
+task init-state   # one-time: create the GCS bucket for Terraform state
+task validate     # cost-free
+task plan         # cost-free
+task up           # VPC, Autopilot cluster, registry (GCP) + SQS queue, OIDC provider + 2 roles (AWS)
 
-task gke-sqs:push         # build + push the writer/reader image
-task gke-sqs:all          # creds -> deploy (both Deployments) -> assert writer SENT & reader RECEIVED
+task push         # build + push the writer/reader image
+task all          # creds -> deploy (both Deployments) -> assert writer SENT & reader RECEIVED
 ```
 
 Inspect the live exchange any time:
@@ -107,12 +107,12 @@ kubectl -n sqsdemo logs deploy/reader --tail=20   # RECEIVED body="..." / DELETE
 ## Tear it down
 
 ```bash
-task gke-sqs:down   # uninstall the Helm release, then destroy all infra (GCP + AWS)
+task down   # uninstall the Helm release, then destroy all infra (GCP + AWS)
 ```
 
 ## Available tasks
 
-`task gke-sqs:<name>` — `init-env`, `init-state`, `fmt`, `validate`, `lint`, `plan`, `up`, `build`,
+`task <name>` — `init-env`, `init-state`, `fmt`, `validate`, `lint`, `plan`, `up`, `build`,
 `push`, `creds`, `deploy`, `test`, `all`, `down`.
 
 ## Security caveats

@@ -13,7 +13,7 @@ two GCS buckets using the Cloud Storage SDK and prints a per-bucket report:
 - **denied** bucket — the KSA is granted nothing, so the read fails and the Job prints the error in
   human-readable form (permission denied, 403).
 
-`task gke-wi:test` asserts `allowed=OK` and `denied=DENIED`, proving the authorization gate is real.
+`task test` asserts `allowed=OK` and `denied=DENIED`, proving the authorization gate is real.
 
 ## Architecture
 
@@ -60,7 +60,7 @@ standalone catalog module, and why a one-shot Job.
 
 ## Prerequisites
 
-- A GCP project and a GCS bucket for Terraform state (create it with `task gke-wi:init-state`).
+- A GCP project and a GCS bucket for Terraform state (create it with `task init-state`).
 - `terraform`, `terragrunt` (pinned via tenv), `gcloud`, `kubectl`, `helm`, `go`, `docker`, and Task
   installed.
 
@@ -84,20 +84,20 @@ The two data buckets are derived automatically as `<project>-wif-allowed` / `<pr
 ## Stand it up (full flow, local)
 
 ```bash
-task gke-wi:init-state   # one-time: create the GCS bucket for Terraform state
-task gke-wi:validate     # cost-free
-task gke-wi:plan         # cost-free
-task gke-wi:up           # VPC, Autopilot cluster, registry, both data buckets, the KSA grant, CI WIF
+task init-state   # one-time: create the GCS bucket for Terraform state
+task validate     # cost-free
+task plan         # cost-free
+task up           # VPC, Autopilot cluster, registry, both data buckets, the KSA grant, CI WIF
 
-task gke-wi:seed         # write message.txt into each data bucket
+task seed         # write message.txt into each data bucket
 
 # build + push the image (mirrors CI), then fetch creds and deploy + assert
-task gke-wi:push
-task gke-wi:creds
-task gke-wi:all
+task push
+task creds
+task all
 ```
 
-`task gke-wi:all` runs `seed → deploy → test-assert`. On success it prints the Job's report and
+`task all` runs `seed → deploy → test-assert`. On success it prints the Job's report and
 confirms `allowed=OK` / `denied=DENIED`. Inspect the raw report any time with:
 
 ```bash
@@ -107,7 +107,7 @@ kubectl -n wifdemo logs job/reader-reader
 ## Wire GitHub Actions (one-time)
 
 ```bash
-task gke-wi:ci-config
+task ci-config
 # WIF_PROVIDER=projects/<num>/locations/global/workloadIdentityPools/github-ci-gke-wi/providers/github
 ```
 
@@ -120,7 +120,7 @@ report on push to `main` (or manual dispatch). A repo-root copy is provided as
 ## Tear it down
 
 ```bash
-task gke-wi:down   # uninstall the Helm release, then destroy infra (buckets force_destroy seeded data)
+task down   # uninstall the Helm release, then destroy infra (buckets force_destroy seeded data)
 ```
 
 ## Security caveats

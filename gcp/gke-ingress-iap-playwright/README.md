@@ -81,7 +81,7 @@ realistically drive Google's interactive sign-in. So:
 ## Prerequisites
 
 - A GCP project **inside a Google organization** and a GCS bucket for Terraform state (create it with
-  `task gke-iap-pw:init-state`).
+  `task init-state`).
 - The **IAP API** enabled on the project (`gcloud services enable iap.googleapis.com`).
 - An **existing public parent zone** in Cloud DNS whose delegation already works.
 - `terraform`, `terragrunt` (pinned via tenv), `gcloud`, `kubectl`, `helm`, `go`, **Node.js 20+ /
@@ -90,7 +90,7 @@ realistically drive Google's interactive sign-in. So:
 Set these before running. The lab loads them from a local **`.env`** file automatically:
 
 ```bash
-task gke-iap-pw:init-env   # copies .env.example to .env (no-op if .env exists)
+task init-env   # copies .env.example to .env (no-op if .env exists)
 $EDITOR .env               # fill in project, region, domain, parent zone, IAP_MEMBER, etc.
 ```
 
@@ -114,25 +114,25 @@ IAP_MEMBER=user:you@example.com     # Google identity allowed through IAP / impe
 ## Stand it up (full flow, local)
 
 ```bash
-task gke-iap-pw:init-env     # one-time: create .env from the template, then fill it in
-task gke-iap-pw:init-state   # one-time: create the GCS bucket for Terraform state
-task gke-iap-pw:validate     # cost-free
-task gke-iap-pw:plan         # cost-free
-task gke-iap-pw:up           # VPC, Autopilot cluster, registry, CI identity, delegated DNS zone, IAP access, test SA
+task init-env     # one-time: create .env from the template, then fill it in
+task init-state   # one-time: create the GCS bucket for Terraform state
+task validate     # cost-free
+task plan         # cost-free
+task up           # VPC, Autopilot cluster, registry, CI identity, delegated DNS zone, IAP access, test SA
 
-task gke-iap-pw:push         # build the Go image and push it to Artifact Registry (mirrors CI)
-task gke-iap-pw:creds        # fetch kube-context for the cluster
-task gke-iap-pw:all          # deploy -> dns -> verify (verify = wait for cert, then Playwright)
+task push         # build the Go image and push it to Artifact Registry (mirrors CI)
+task creds        # fetch kube-context for the cluster
+task all          # deploy -> dns -> verify (verify = wait for cert, then Playwright)
 ```
 
-`task gke-iap-pw:verify` waits for the managed cert to go Active, then runs the Playwright IAP tests
-(negative + positive) via `task gke-iap-pw:test-e2e`. First managed-cert issuance can take 10–20
+`task verify` waits for the managed cert to go Active, then runs the Playwright IAP tests
+(negative + positive) via `task test-e2e`. First managed-cert issuance can take 10–20
 minutes.
 
 ## Wire GitHub Actions (one-time)
 
 ```bash
-task gke-iap-pw:ci-config
+task ci-config
 # WIF_PROVIDER=projects/<num>/locations/global/workloadIdentityPools/github-ci-gke-iap-pw/providers/github
 ```
 
@@ -146,7 +146,7 @@ top-level `.github/workflows/`.
 ## Tear it down
 
 ```bash
-task gke-iap-pw:down   # uninstalls the Helm release (removes the LB/Ingress), then destroys infra
+task down   # uninstalls the Helm release (removes the LB/Ingress), then destroys infra
 ```
 
 ## Security caveats

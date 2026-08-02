@@ -65,19 +65,19 @@ IAP has two halves and you need both:
 
 - **Negative (automated, no credentials):** an unauthenticated `GET` is bounced to Google sign-in
   (302 to `accounts.google.com`) or refused (401/403). A 200 would mean IAP isn't enforcing — a hard
-  failure. Run by `task gke-iap:verify` (and the GitHub Action).
+  failure. Run by `task verify` (and the GitHub Action).
 - **Positive (service-account JWT):** with the Google-managed client, programmatic access uses a
   **self-signed service-account JWT** whose audience is the resource URL. The lab creates a test SA,
   grants it IAP access, lets you impersonate it (Token Creator), signs a JWT with
   `gcloud iam service-accounts sign-jwt`, and `GET`s with `Authorization: Bearer <jwt>` expecting
-  200. Run by `task gke-iap:verify-positive`.
+  200. Run by `task verify-positive`.
 - **Browser (manual):** open `https://$INGRESS_DOMAIN` and sign in as `IAP_MEMBER` to see the app;
   a disallowed identity is blocked.
 
 ## Prerequisites
 
 - A GCP project **inside a Google organization** (Google-managed OAuth authenticates org-internal
-  identities) and a GCS bucket for Terraform state (create it with `task gke-iap:init-state`).
+  identities) and a GCS bucket for Terraform state (create it with `task init-state`).
 - The **IAP API** enabled on the project (`gcloud services enable iap.googleapis.com`).
 - An **existing public parent zone** in Cloud DNS whose delegation already works.
 - `terraform`, `terragrunt` (pinned via tenv), `gcloud`, `kubectl`, `helm`, `go`, and Task installed.
@@ -85,7 +85,7 @@ IAP has two halves and you need both:
 Set these before running. The lab loads them from a local **`.env`** file automatically:
 
 ```bash
-task gke-iap:init-env   # copies .env.example to .env (no-op if .env exists)
+task init-env   # copies .env.example to .env (no-op if .env exists)
 $EDITOR .env            # fill in project, region, domain, parent zone, IAP_MEMBER, etc.
 ```
 
@@ -109,24 +109,24 @@ IAP_MEMBER=user:you@example.com     # Google identity allowed through IAP / impe
 ## Stand it up (full flow, local)
 
 ```bash
-task gke-iap:init-env     # one-time: create .env from the template, then fill it in
-task gke-iap:init-state   # one-time: create the GCS bucket for Terraform state
-task gke-iap:validate     # cost-free
-task gke-iap:plan         # cost-free
-task gke-iap:up           # VPC, Autopilot cluster, registry, CI identity, delegated DNS zone, IAP access
+task init-env     # one-time: create .env from the template, then fill it in
+task init-state   # one-time: create the GCS bucket for Terraform state
+task validate     # cost-free
+task plan         # cost-free
+task up           # VPC, Autopilot cluster, registry, CI identity, delegated DNS zone, IAP access
 
-task gke-iap:push         # build the Go image and push it to Artifact Registry (mirrors CI)
-task gke-iap:creds        # fetch kube-context for the cluster
-task gke-iap:all          # deploy -> dns -> verify
+task push         # build the Go image and push it to Artifact Registry (mirrors CI)
+task creds        # fetch kube-context for the cluster
+task all          # deploy -> dns -> verify
 ```
 
-`task gke-iap:all` runs `deploy → dns → verify`. `verify` waits for the cert + DNS, then runs the IAP
+`task all` runs `deploy → dns → verify`. `verify` waits for the cert + DNS, then runs the IAP
 negative and positive tests. First managed-cert issuance can take 10–20 minutes.
 
 ## Wire GitHub Actions (one-time)
 
 ```bash
-task gke-iap:ci-config
+task ci-config
 # WIF_PROVIDER=projects/<num>/locations/global/workloadIdentityPools/github-ci-gke-iap/providers/github
 ```
 
@@ -140,7 +140,7 @@ lab; to have GitHub run it, move or symlink it to the repository's top-level `.g
 ## Tear it down
 
 ```bash
-task gke-iap:down   # uninstalls the Helm release (removes the LB/Ingress), then destroys infra
+task down   # uninstalls the Helm release (removes the LB/Ingress), then destroys infra
 ```
 
 ## Security caveats

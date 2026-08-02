@@ -1,5 +1,10 @@
 version: '3'
 
+# Runtime inputs load once from the lab-root .env (top-level dotenv, resolved relative to
+# the lab root regardless of a task's `dir:`). A missing .env is harmless, so cost-free
+# tasks still run on a clean checkout.
+dotenv: ['.env']
+
 # Lifecycle for the gcp/gke-secret-manager-csi lab.
 #
 # Demonstrates the GKE-managed Secret Manager add-on (the Google build of the Secrets Store CSI
@@ -18,9 +23,7 @@ version: '3'
 #   6. down       -> destroy everything.
 #
 # Only init-state, up, and deploy create/modify cloud resources. fmt/validate/plan are cost-free.
-# Config is loaded from `.env` (see .env.example); `.env` is gitignored. Per-task `dotenv:` (not a
-# global one) because the root Taskfile includes this file; tasks with `dir: infra` load
-# `['../.env']`, the rest `['.env']`.
+# Config is loaded from `.env` (see .env.example); `.env` is gitignored.
 
 vars:
   CLUSTER: gke-secret-manager-csi
@@ -44,7 +47,6 @@ tasks:
 
   init-state:
     desc: Create the GCS bucket for Terraform/Terragrunt remote state (idempotent; run once before `up`)
-    dotenv: ['.env']
     cmds:
       - |
         : "${GCP_PROJECT:?set GCP_PROJECT=<project id>}"
@@ -70,30 +72,25 @@ tasks:
   validate:
     desc: Validate every infra unit (cost-free)
     dir: infra
-    dotenv: ['../.env']
     cmds: [terragrunt run --all validate]
 
   plan:
     desc: Plan all infra units (cost-free)
     dir: infra
-    dotenv: ['../.env']
     cmds: [terragrunt run --all plan]
 
   up:
     desc: Provision infra — VPC, Autopilot cluster (Secret Manager add-on + SecretSync on), two seeded secrets, KSA IAM grants
     dir: infra
-    dotenv: ['../.env']
     cmds: [terragrunt run --all apply --non-interactive]
 
   creds:
     desc: Fetch kube-context for the cluster
-    dotenv: ['.env']
     cmds:
       - gcloud container clusters get-credentials {{.CLUSTER}} --region "$GCP_REGION"
 
   deploy:
     desc: Apply the demo workload (namespace, KSA, two SPCs, SecretSync, Deployment)
-    dotenv: ['.env']
     cmds:
       - |
         : "${GCP_PROJECT:?set GCP_PROJECT=<project id>}"
@@ -115,7 +112,6 @@ tasks:
 
   down:
     desc: Destroy everything (delete the workload first, then destroy infra)
-    dotenv: ['.env']
     cmds:
       - kubectl delete -k deploy --ignore-not-found || true
       - cd infra && terragrunt run --all destroy --non-interactive

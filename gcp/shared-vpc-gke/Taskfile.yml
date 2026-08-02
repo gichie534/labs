@@ -1,5 +1,10 @@
 version: '3'
 
+# Runtime inputs load once from the lab-root .env (top-level dotenv, resolved relative to
+# the lab root regardless of a task's `dir:`). A missing .env is harmless, so cost-free
+# tasks still run on a clean checkout.
+dotenv: ['.env']
+
 # Lifecycle for the gcp/shared-vpc-gke lab.
 #
 # Infra is Terragrunt laid out as a GCP org hierarchy (directory = node) under root-folder/,
@@ -11,9 +16,7 @@ version: '3'
 # CONFIG: lab inputs (org/billing, region, project IDs, state bucket) are loaded from a local `.env`
 # via Task's built-in dotenv. Copy `.env.example` to `.env` (`task shared-vpc:init-env`) and fill it
 # in; `.env` is gitignored. Values exported in your shell still win, and root.hcl reads them through
-# get_env(...). A global top-level `dotenv:` is rejected in a Taskfile that another Taskfile
-# `include`s (the root labs/Taskfile.yml includes this one), so `.env` is declared per task. Tasks
-# run at the lab root, so the path is `.env`.
+# get_env(...).
 
 tasks:
   default:
@@ -33,7 +36,6 @@ tasks:
 
   init-state:
     desc: Create the GCS bucket for Terraform/Terragrunt remote state (idempotent; run once before `up`)
-    dotenv: ['.env']
     cmds:
       - |
         : "${TF_STATE_BUCKET:?set TF_STATE_BUCKET=<bucket name (no gs:// prefix)>}"
@@ -59,7 +61,6 @@ tasks:
 
   validate:
     desc: Validate every unit (cost-free)
-    dotenv: ['.env']
     cmds:
       - terragrunt run --all validate
 
@@ -70,13 +71,11 @@ tasks:
 
   plan:
     desc: Plan the whole hierarchy (cost-free)
-    dotenv: ['.env']
     cmds:
       - terragrunt run --all plan
 
   up:
     desc: Provision the folder, both projects, the host VPC, the Shared VPC grants, and the Autopilot cluster (creates cloud resources)
-    dotenv: ['.env']
     cmds:
       - terragrunt run --all apply --non-interactive
 
@@ -88,6 +87,5 @@ tasks:
 
   down:
     desc: Destroy everything
-    dotenv: ['.env']
     cmds:
       - terragrunt run --all destroy --non-interactive

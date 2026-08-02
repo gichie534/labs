@@ -79,7 +79,7 @@ cluster credentials, and runs `helm upgrade --install`. The repo's k8s steering 
 ## Consequences
 
 - The cluster control plane is internet-reachable for the lab's lifetime — tear it down with
-  `task gke-helm:down` when finished.
+  `task down` when finished.
 - The lab depends on four module tags being published: `gcp-vpc-v0.1.0`, `gcp-gke-v0.1.0`,
   `gcp-artifact-registry-v0.2.0` (adds `reader_members`), and the new
   `gcp-workload-identity-federation-v0.1.0`.

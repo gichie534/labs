@@ -81,7 +81,7 @@ Config is loaded from a local `.env` via the Taskfile's dotenv; `root.hcl` reads
 `get_env(...)`. Seed and edit it:
 
 ```bash
-task shared-vpc:init-env    # copies .env.example -> .env (no-op if .env exists)
+task init-env    # copies .env.example -> .env (no-op if .env exists)
 $EDITOR .env                # set org/billing, region, the two project IDs, and the state bucket
 ```
 
@@ -91,11 +91,11 @@ $EDITOR .env                # set org/billing, region, the two project IDs, and 
 ## Stand it up
 
 ```bash
-task shared-vpc:init-env    # seed .env, then edit it
-task shared-vpc:init-state  # create the GCS state bucket (idempotent; run once)
-task shared-vpc:validate    # cost-free
-task shared-vpc:plan        # cost-free
-task shared-vpc:up          # creates the folder, both projects, VPC, Shared VPC grants, and cluster
+task init-env    # seed .env, then edit it
+task init-state  # create the GCS state bucket (idempotent; run once)
+task validate    # cost-free
+task plan        # cost-free
+task up          # creates the folder, both projects, VPC, Shared VPC grants, and cluster
 ```
 
 Then fetch cluster credentials:
@@ -109,7 +109,7 @@ kubectl get nodes
 ## Tear it down
 
 ```bash
-task shared-vpc:down
+task down
 ```
 
 ## Security caveats

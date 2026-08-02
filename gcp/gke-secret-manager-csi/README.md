@@ -58,7 +58,7 @@ federated principal on each secret (no Google service account, no key, no impers
 
 ## Prerequisites
 
-- A GCP project, plus a GCS bucket for Terraform state (create it with `task csi:init-state`).
+- A GCP project, plus a GCS bucket for Terraform state (create it with `task init-state`).
 - `terraform`, `terragrunt` (pinned via tenv), `gcloud`, `kubectl`, and Task installed.
 - A GKE control plane on a version that supports `secret_sync_config` (1.33+ at the time of
   writing). The default `release_channel = REGULAR` rolls forward into this range.
@@ -66,7 +66,7 @@ federated principal on each secret (no Google service account, no key, no impers
 Copy the env template and fill it in (`.env` is gitignored; shell exports take precedence):
 
 ```bash
-task csi:init-env   # cp .env.example .env (won't clobber an existing .env)
+task init-env   # cp .env.example .env (won't clobber an existing .env)
 $EDITOR .env
 ```
 
@@ -80,22 +80,22 @@ TF_STATE_BUCKET=my-tf-state-bucket
 ## Stand it up
 
 ```bash
-task csi:init-state   # one-time: create the GCS bucket for Terraform state
-task csi:validate     # cost-free
-task csi:plan         # cost-free
-task csi:up           # VPC, Autopilot cluster, two seeded secrets, KSA IAM grants
+task init-state   # one-time: create the GCS bucket for Terraform state
+task validate     # cost-free
+task plan         # cost-free
+task up           # VPC, Autopilot cluster, two seeded secrets, KSA IAM grants
 
-task csi:creds        # kube-context
-task csi:deploy       # namespace, KSA, two SPCs, SecretSync, Deployment
+task creds        # kube-context
+task deploy       # namespace, KSA, two SPCs, SecretSync, Deployment
 
-task csi:logs         # tail the printer; expect lines like:
+task logs         # tail the printer; expect lines like:
                       #   2026-... volume=hello-from-volume env=hello-from-env
 ```
 
 ## Tear it down
 
 ```bash
-task csi:down   # delete the workload, then destroy infra
+task down   # delete the workload, then destroy infra
 ```
 
 ## Security caveats

@@ -70,7 +70,7 @@ Platform** — this is where OAuth clients now live (the old *APIs & Services �
 **Admin console → Security → API controls → Domain-wide delegation**:
 
 ```bash
-task argocd-sso:dwd-id
+task dwd-id
 # authorize that client_id for scopes:
 #   https://www.googleapis.com/auth/admin.directory.group.readonly
 #   https://www.googleapis.com/auth/admin.directory.user.readonly
@@ -79,7 +79,7 @@ task argocd-sso:dwd-id
 ## Configure `.env`
 
 ```bash
-task argocd-sso:init-env
+task init-env
 $EDITOR .env
 ```
 
@@ -94,15 +94,15 @@ domain never lands in Git.
 
 ```bash
 # 0. create the OAuth Web client (manual step 1) and fill in .env
-task argocd-sso:init-state
-task argocd-sso:validate            # cost-free
-task argocd-sso:up                  # infra + Dex SA + Secret Manager secrets
+task init-state
+task validate            # cost-free
+task up                  # infra + Dex SA + Secret Manager secrets
 
-task argocd-sso:dwd-id              # manual step 2: authorize DWD in the Admin console
+task dwd-id              # manual step 2: authorize DWD in the Admin console
 
-task argocd-sso:creds
-task argocd-sso:deploy              # inject SM secrets, render+apply Argo CD, apply app-of-apps
-task argocd-sso:verify              # wait for the Gateway IP + managed cert, GET the HTTPS endpoint
+task creds
+task deploy              # inject SM secrets, render+apply Argo CD, apply app-of-apps
+task verify              # wait for the Gateway IP + managed cert, GET the HTTPS endpoint
 ```
 
 Then open `https://<ARGOCD_DOMAIN>` and choose **LOG IN VIA GOOGLE**. What each user sees:
@@ -112,12 +112,12 @@ Then open `https://<ARGOCD_DOMAIN>` and choose **LOG IN VIA GOOGLE**. What each 
 - a member of `TEAM_B_GROUP` → only the `team-b-hello` app in project `team-b`,
 - anyone else → logs in but sees nothing (default deny).
 
-The local `admin` user still works for break-glass (`task argocd-sso:password`).
+The local `admin` user still works for break-glass (`task password`).
 
 ## Tear it down
 
 ```bash
-task argocd-sso:down
+task down
 ```
 
 ## Security caveats

@@ -31,11 +31,13 @@ first use inside a lab, matching that lab's pinned versions.
 
 ## Running a lab
 
-Every lab exposes the standard Task interface and is namespaced from the repo root:
+Every lab exposes the same standard Task interface, run from inside the lab folder (there is no root
+Taskfile):
 
 ```sh
-task --list                 # all labs' tasks
-task org-layout:validate    # cost-free
-task org-layout:plan        # cost-free
-task org-layout:up          # creates cloud resources
+cd gcp/organization-layout-terragrunt
+task --list      # this lab's tasks
+task validate    # cost-free
+task plan        # cost-free
+task up          # creates cloud resources
 ```

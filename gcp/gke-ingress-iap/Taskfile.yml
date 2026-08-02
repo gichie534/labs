@@ -1,5 +1,10 @@
 version: '3'
 
+# Runtime inputs load once from the lab-root .env (top-level dotenv, resolved relative to
+# the lab root regardless of a task's `dir:`). A missing .env is harmless, so cost-free
+# tasks still run on a clean checkout.
+dotenv: ['.env']
+
 # Lifecycle for the gcp/gke-ingress-iap lab.
 #
 # Infra is Terragrunt (units under infra/, composed by dependency blocks). The app is a Go
@@ -27,11 +32,6 @@ version: '3'
 # loaded from a local `.env` file via Task's built-in dotenv. Copy `.env.example` to `.env` and fill
 # it in; `.env` is gitignored. Values exported in your shell still win, and Terragrunt's root.hcl
 # picks them up through get_env(...). A missing `.env` is harmless (cost-free tasks still run).
-#
-# A global top-level `dotenv:` is rejected in a Taskfile that another Taskfile `include`s (the root
-# labs/Taskfile.yml includes this one), so `.env` is declared per-task. NOTE the path nuance: dotenv
-# resolves relative to the task's working dir, so tasks that set `dir: infra` load `['../.env']`
-# (the lab root) while the rest load `['.env']`.
 
 vars:
   APP_DIR: app/go
@@ -60,7 +60,6 @@ tasks:
 
   init-state:
     desc: Create the GCS bucket for Terraform/Terragrunt remote state (idempotent; run once before `up`)
-    dotenv: ['.env']
     cmds:
       - |
         : "${GCP_PROJECT:?set GCP_PROJECT=<project id>}"
@@ -88,7 +87,6 @@ tasks:
   validate:
     desc: Validate every infra unit (cost-free)
     dir: infra
-    dotenv: ['../.env']
     cmds: [terragrunt run --all validate]
 
   lint:
@@ -100,13 +98,11 @@ tasks:
   plan:
     desc: Plan all infra units (cost-free)
     dir: infra
-    dotenv: ['../.env']
     cmds: [terragrunt run --all plan]
 
   up:
     desc: Provision infra — VPC, Autopilot cluster, registry, CI identity, the delegated public DNS zone, and IAP access (creates cloud resources)
     dir: infra
-    dotenv: ['../.env']
     cmds: [terragrunt run --all apply --non-interactive]
 
   build:
@@ -117,7 +113,6 @@ tasks:
   push:
     desc: Tag the local hello:dev image for Artifact Registry and push it (mirrors CI)
     deps: [build]
-    dotenv: ['.env']
     cmds:
       - |
         : "${GCP_PROJECT:?set GCP_PROJECT=<project id>}"
@@ -130,13 +125,11 @@ tasks:
 
   creds:
     desc: Fetch kube-context for the cluster
-    dotenv: ['.env']
     cmds:
       - gcloud container clusters get-credentials {{.CLUSTER}} --region "$GCP_REGION"
 
   deploy:
     desc: Deploy the chart to the current kube-context with Helm (requires an image already pushed)
-    dotenv: ['.env']
     vars:
       TAG: '{{.TAG | default "dev"}}'
     cmds:
@@ -154,7 +147,6 @@ tasks:
 
   dns:
     desc: Publish the apex A record by reading the deployed Ingress IP, then re-applying the dns unit (phase 2)
-    dotenv: ['.env']
     cmds:
       - |
         : "${INGRESS_DOMAIN:?set INGRESS_DOMAIN=<the public hostname>}"
@@ -171,7 +163,6 @@ tasks:
 
   verify:
     desc: Wait for the managed cert + DNS, then run the IAP negative + positive connectivity tests
-    dotenv: ['.env']
     cmds:
       - |
         : "${INGRESS_DOMAIN:?set INGRESS_DOMAIN=<the public hostname>}"
@@ -188,7 +179,6 @@ tasks:
 
   verify-negative:
     desc: "IAP negative test: an UNAUTHENTICATED request must NOT reach the app (IAP redirects to Google sign-in)"
-    dotenv: ['.env']
     cmds:
       - |
         : "${INGRESS_DOMAIN:?set INGRESS_DOMAIN=<the public hostname>}"
@@ -224,7 +214,6 @@ tasks:
 
   verify-positive:
     desc: "IAP positive test: a request with a service-account-signed JWT (aud = resource URL) reaches the app"
-    dotenv: ['.env']
     cmds:
       - |
         : "${INGRESS_DOMAIN:?set INGRESS_DOMAIN=<the public hostname>}"
@@ -266,7 +255,6 @@ tasks:
   ci-config:
     desc: Print the WIF provider name to set as a GitHub Actions variable
     dir: infra
-    dotenv: ['../.env']
     cmds:
       - |
         echo "Set this as a GitHub Actions repository variable:"
@@ -285,7 +273,6 @@ tasks:
 
   down:
     desc: Destroy all infra (delete the Helm release first so the LB/Ingress is removed cleanly)
-    dotenv: ['.env']
     cmds:
       - helm uninstall {{.RELEASE}} --namespace {{.NAMESPACE}} --ignore-not-found --wait || true
       - cd infra && terragrunt run --all destroy --non-interactive

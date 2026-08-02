@@ -60,7 +60,7 @@ First managed-cert issuance can take 10–20 minutes.
 
 ## Prerequisites
 
-- A GCP project and a GCS bucket for Terraform state (create it with `task gke-ingress:init-state`).
+- A GCP project and a GCS bucket for Terraform state (create it with `task init-state`).
 - An **existing public parent zone** in Cloud DNS (here `gcp.example.com`) whose delegation
   already works (your registrar / Cloudflare NS records point at it).
 - `terraform`, `terragrunt` (pinned via tenv), `gcloud`, `kubectl`, `helm`, `go`, and Task installed.
@@ -100,27 +100,27 @@ PARENT_DNS_PROJECT=my-bootstrap-project   # project owning the parent zone (omit
 ## Stand it up (full flow, local)
 
 ```bash
-task gke-ingress:init-state   # one-time: create the GCS bucket for Terraform state
-task gke-ingress:validate     # cost-free
-task gke-ingress:plan         # cost-free
-task gke-ingress:up           # VPC, Autopilot cluster, registry, CI identity, delegated DNS zone
+task init-state   # one-time: create the GCS bucket for Terraform state
+task validate     # cost-free
+task plan         # cost-free
+task up           # VPC, Autopilot cluster, registry, CI identity, delegated DNS zone
 
 # build + push an image (mirrors CI), fetch creds, then deploy -> dns -> verify
-task gke-ingress:build
+task build
 gcloud auth configure-docker "$GCP_REGION-docker.pkg.dev" --quiet
 docker tag hello:dev "$GCP_REGION-docker.pkg.dev/$GCP_PROJECT/gke-ingress-managed-cert/hello:dev"
 docker push "$GCP_REGION-docker.pkg.dev/$GCP_PROJECT/gke-ingress-managed-cert/hello:dev"
-task gke-ingress:creds
-REGISTRY="$GCP_REGION-docker.pkg.dev/$GCP_PROJECT/gke-ingress-managed-cert" TAG=dev task gke-ingress:all
+task creds
+REGISTRY="$GCP_REGION-docker.pkg.dev/$GCP_PROJECT/gke-ingress-managed-cert" TAG=dev task all
 ```
 
-`task gke-ingress:all` runs `deploy → dns → verify`. On success it prints the greeting fetched over
+`task all` runs `deploy → dns → verify`. On success it prints the greeting fetched over
 HTTPS from `https://$INGRESS_DOMAIN/`.
 
 ## Wire GitHub Actions (one-time)
 
 ```bash
-task gke-ingress:ci-config
+task ci-config
 # WIF_PROVIDER=projects/<num>/locations/global/workloadIdentityPools/github-ci/providers/github
 ```
 
@@ -140,7 +140,7 @@ HTTPS endpoint** on push to `main` (or manual dispatch), authenticating with dir
 ## Tear it down
 
 ```bash
-task gke-ingress:down   # uninstalls the Helm release (removes the LB/Ingress), then destroys infra
+task down   # uninstalls the Helm release (removes the LB/Ingress), then destroys infra
 ```
 
 ## Security caveats

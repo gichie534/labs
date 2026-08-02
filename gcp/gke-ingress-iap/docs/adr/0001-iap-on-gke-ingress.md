@@ -70,7 +70,7 @@ CI keeps the reference lab's minimal roles (`artifactregistry.writer` + `contain
 positive test needs to impersonate the test SA, which we deliberately do **not** grant to the CI
 federated principal — widening CI's blast radius to mint IAP tokens isn't justified for shipping an
 image. So the GitHub Action runs build → push → deploy → **negative** test; the operator runs the
-positive test locally via `task gke-iap:verify-positive`.
+positive test locally via `task verify-positive`.
 
 ### Ephemeral LB IP + two-phase DNS, master_authorized_networks = 0.0.0.0/0
 

@@ -1,5 +1,10 @@
 version: '3'
 
+# Runtime inputs load once from the lab-root .env (top-level dotenv, resolved relative to
+# the lab root regardless of a task's `dir:`). A missing .env is harmless, so cost-free
+# tasks still run on a clean checkout.
+dotenv: ['.env']
+
 # Lifecycle for the gcp/gke-workload-identity lab.
 #
 # Demonstrates DIRECT Workload Identity Federation for GKE: a Kubernetes service account is itself
@@ -20,8 +25,6 @@ version: '3'
 #
 # Only init-state, up, seed, build(push), and deploy create/modify cloud resources. fmt/validate/
 # plan are cost-free. Config is loaded from a local `.env` (see .env.example); `.env` is gitignored.
-# Per-task `dotenv:` (not a global one) because the root Taskfile includes this file; tasks with
-# `dir: infra` load `['../.env']`, the rest `['.env']`.
 
 vars:
   APP_DIR: app/go
@@ -39,7 +42,6 @@ tasks:
 
   init-state:
     desc: Create the GCS bucket for Terraform/Terragrunt remote state (idempotent; run once before `up`)
-    dotenv: ['.env']
     cmds:
       - |
         : "${GCP_PROJECT:?set GCP_PROJECT=<project id>}"
@@ -66,7 +68,6 @@ tasks:
   validate:
     desc: Validate every infra unit (cost-free)
     dir: infra
-    dotenv: ['../.env']
     cmds: [terragrunt run --all validate]
 
   lint:
@@ -78,18 +79,15 @@ tasks:
   plan:
     desc: Plan all infra units (cost-free)
     dir: infra
-    dotenv: ['../.env']
     cmds: [terragrunt run --all plan]
 
   up:
     desc: Provision infra — VPC, Autopilot cluster, registry, two data buckets, the KSA IAM grant, CI WIF (creates cloud resources)
     dir: infra
-    dotenv: ['../.env']
     cmds: [terragrunt run --all apply --non-interactive]
 
   seed:
     desc: Write a message.txt into each data bucket (the data the Job reads)
-    dotenv: ['.env']
     cmds:
       - |
         : "${GCP_PROJECT:?set GCP_PROJECT=<project id>}"
@@ -111,7 +109,6 @@ tasks:
   push:
     desc: Tag the local reader:dev image for Artifact Registry and push it (mirrors CI)
     deps: [build]
-    dotenv: ['.env']
     cmds:
       - |
         : "${GCP_PROJECT:?set GCP_PROJECT=<project id>}"
@@ -124,13 +121,11 @@ tasks:
 
   creds:
     desc: Fetch kube-context for the cluster
-    dotenv: ['.env']
     cmds:
       - gcloud container clusters get-credentials {{.CLUSTER}} --region "$GCP_REGION"
 
   deploy:
     desc: Deploy the reader Job with Helm (requires an image already pushed and buckets seeded)
-    dotenv: ['.env']
     vars:
       TAG: '{{.TAG | default "dev"}}'
     cmds:
@@ -159,7 +154,6 @@ tasks:
 
   test-assert:
     desc: Assert the reader Job reported allowed=OK and denied=DENIED (requires a deployed Job)
-    dotenv: ['.env']
     cmds:
       - |
         JOB="{{.RELEASE}}-reader"
@@ -186,7 +180,6 @@ tasks:
   ci-config:
     desc: Print the GitHub WIF provider name to set as a GitHub Actions variable
     dir: infra
-    dotenv: ['../.env']
     cmds:
       - |
         echo "Set this as a GitHub Actions repository variable:"
@@ -194,7 +187,6 @@ tasks:
 
   down:
     desc: Destroy everything (uninstall the Helm release first, then destroy infra)
-    dotenv: ['.env']
     cmds:
       - helm uninstall {{.RELEASE}} --namespace {{.NAMESPACE}} --ignore-not-found --wait || true
       - cd infra && terragrunt run --all destroy --non-interactive

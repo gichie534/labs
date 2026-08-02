@@ -64,5 +64,5 @@ GitOps manifests generic and reproducible, and avoids leaking the private DNS zo
 
 - The cluster control-plane endpoint is opened to `0.0.0.0/0` so operators/CI can run the one-time
   bootstrap. Deliberate lab-only tradeoff, inherited from the sibling GKE labs.
-- First managed-cert issuance can take 10–20 minutes; `task argocd:verify` polls for it.
+- First managed-cert issuance can take 10–20 minutes; `task verify` polls for it.
 - Self-managed Argo CD can briefly disrupt itself during a self-upgrade — acceptable for a lab.

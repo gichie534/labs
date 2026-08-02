@@ -1,5 +1,9 @@
 version: '3'
 
+# Runtime inputs load once from the lab-root .env (top-level dotenv, resolved relative to the lab
+# root regardless of a task's `dir:`). Cost-free tasks still run on a clean checkout with no .env.
+dotenv: ['.env']
+
 # Lifecycle for the gcp/gke-argocd-sso-google-groups lab = the base gke-argocd lab + Google Workspace
 # SSO (Dex, Google groups connector) + multi-tenant RBAC.
 #
@@ -44,7 +48,6 @@ tasks:
 
   init-state:
     desc: Create the GCS bucket for Terraform/Terragrunt remote state (idempotent; run once before `up`)
-    dotenv: ['.env']
     cmds:
       - |
         : "${GCP_PROJECT:?set GCP_PROJECT=<project id>}"
@@ -70,7 +73,6 @@ tasks:
   validate:
     desc: Validate every infra unit (cost-free)
     dir: infra
-    dotenv: ['../.env']
     cmds: [terragrunt run --all validate]
 
   lint:
@@ -83,19 +85,16 @@ tasks:
   plan:
     desc: Plan all infra units (cost-free)
     dir: infra
-    dotenv: ['../.env']
     cmds: [terragrunt run --all plan]
 
   up:
     desc: Provision infra — VPC, cluster, IP, cert, DNS, and the SSO SA/secrets (creates cloud resources)
     dir: infra
-    dotenv: ['../.env']
     cmds: [terragrunt run --all apply --non-interactive]
 
   dwd-id:
     desc: Print the directory SA client id to authorize for domain-wide delegation in the Workspace Admin console
     dir: infra/sso-secrets
-    dotenv: ['../../.env']
     silent: true
     cmds:
       - |
@@ -110,13 +109,11 @@ tasks:
 
   creds:
     desc: Fetch kube-context for the cluster
-    dotenv: ['.env']
     cmds:
       - gcloud container clusters get-credentials {{.CLUSTER}} --region "$GCP_REGION"
 
   deploy:
     desc: Inject SSO secrets from Secret Manager, render+apply the Argo CD platform, then apply the app-of-apps
-    dotenv: ['.env']
     cmds:
       - |
         : "${GCP_PROJECT:?set GCP_PROJECT}"
@@ -166,7 +163,6 @@ tasks:
 
   verify:
     desc: Wait for the Gateway IP + managed cert, then GET the public HTTPS endpoint
-    dotenv: ['.env']
     cmds:
       - |
         : "${ARGOCD_DOMAIN:?set ARGOCD_DOMAIN}"
@@ -198,7 +194,6 @@ tasks:
 
   down:
     desc: Tear down — delete the app-of-apps + Argo CD platform (removes the Gateway/LB), then destroy infra
-    dotenv: ['.env']
     cmds:
       - kubectl delete -f deploy/bootstrap/root-app.yaml --ignore-not-found --wait=true || true
       - kubectl delete -k deploy/argocd --ignore-not-found --wait=true || true

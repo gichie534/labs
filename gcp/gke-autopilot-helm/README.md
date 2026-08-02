@@ -49,7 +49,7 @@ Config lives in a local `.env` file (loaded automatically by the Taskfile via do
 gitignored). Create it from the template and fill in your values:
 
 ```bash
-task gke-helm:init-env      # copies .env.example -> .env (no-op if .env exists)
+task init-env      # copies .env.example -> .env (no-op if .env exists)
 $EDITOR .env
 ```
 
@@ -70,17 +70,17 @@ through `get_env(...)`.
 ## Stand it up
 
 ```bash
-task gke-helm:init-state    # create the GCS state bucket (idempotent; run once)
-task gke-helm:validate      # cost-free
-task gke-helm:plan          # cost-free
-task gke-helm:up            # creates the VPC, Autopilot cluster, registry, and CI identity
+task init-state    # create the GCS state bucket (idempotent; run once)
+task validate      # cost-free
+task plan          # cost-free
+task up            # creates the VPC, Autopilot cluster, registry, and CI identity
 ```
 
 Then wire GitHub Actions (one-time) — print the provider name and set it as a repository
 **Variable**:
 
 ```bash
-task gke-helm:ci-config
+task ci-config
 # WIF_PROVIDER=projects/<num>/locations/global/workloadIdentityPools/github-ci/providers/github
 ```
 
@@ -95,16 +95,16 @@ with **direct WIF**.
 ## Local deploy (optional)
 
 ```bash
-task gke-helm:push          # build + push hello:dev to Artifact Registry (derives the registry from .env)
-task gke-helm:creds         # fetch kube-context for the cluster
-task gke-helm:deploy        # helm upgrade --install (TAG=dev by default; override with TAG=... task gke-helm:deploy)
+task push          # build + push hello:dev to Artifact Registry (derives the registry from .env)
+task creds         # fetch kube-context for the cluster
+task deploy        # helm upgrade --install (TAG=dev by default; override with TAG=... task deploy)
 kubectl -n hello get svc hello   # grab the LoadBalancer external IP, then curl it
 ```
 
 ## Tear it down
 
 ```bash
-task gke-helm:down
+task down
 ```
 
 ## Security caveats

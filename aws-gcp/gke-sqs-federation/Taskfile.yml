@@ -1,5 +1,10 @@
 version: '3'
 
+# Runtime inputs load once from the lab-root .env (top-level dotenv, resolved relative to
+# the lab root regardless of a task's `dir:`). A missing .env is harmless, so cost-free
+# tasks still run on a clean checkout.
+dotenv: ['.env']
+
 # Lifecycle for the aws-gcp/gke-sqs-federation lab.
 #
 # Demonstrates KEYLESS cross-cloud auth: GKE pods authenticate to AWS SQS via OIDC web identity
@@ -17,9 +22,7 @@ version: '3'
 #   7. down       -> uninstall the release, then destroy infra.
 #
 # Only init-state, up, push, and deploy touch cloud resources. fmt/validate/plan are cost-free.
-# Config is loaded from a local `.env` (see .env.example); `.env` is gitignored. Per-task `dotenv:`
-# (not a global one) because the root Taskfile includes this file; tasks with `dir: infra` load
-# `['../.env']`, the rest `['.env']`.
+# Config is loaded from a local `.env` (see .env.example); `.env` is gitignored.
 
 vars:
   APP_DIR: app/go
@@ -48,7 +51,6 @@ tasks:
 
   init-state:
     desc: Create the GCS bucket for Terraform/Terragrunt remote state (idempotent; run once before `up`)
-    dotenv: ['.env']
     cmds:
       - |
         : "${GCP_PROJECT:?set GCP_PROJECT=<project id>}"
@@ -75,7 +77,6 @@ tasks:
   validate:
     desc: Validate every infra unit (cost-free)
     dir: infra
-    dotenv: ['../.env']
     cmds: [terragrunt run --all validate]
 
   lint:
@@ -87,13 +88,11 @@ tasks:
   plan:
     desc: Plan all infra units (cost-free)
     dir: infra
-    dotenv: ['../.env']
     cmds: [terragrunt run --all plan]
 
   up:
     desc: Provision infra — VPC, Autopilot cluster, registry (GCP) + SQS queue, OIDC provider + 2 roles (AWS) (creates cloud resources)
     dir: infra
-    dotenv: ['../.env']
     cmds: [terragrunt run --all apply --non-interactive]
 
   build:
@@ -104,7 +103,6 @@ tasks:
   push:
     desc: Tag the local sqsapp:dev image for Artifact Registry and push it
     deps: [build]
-    dotenv: ['.env']
     cmds:
       - |
         : "${GCP_PROJECT:?set GCP_PROJECT=<project id>}"
@@ -117,13 +115,11 @@ tasks:
 
   creds:
     desc: Fetch kube-context for the cluster
-    dotenv: ['.env']
     cmds:
       - gcloud container clusters get-credentials {{.CLUSTER}} --region "$GCP_REGION"
 
   deploy:
     desc: Deploy the writer + reader Deployments with Helm (requires an image already pushed)
-    dotenv: ['.env']
     vars:
       TAG: '{{.TAG | default "dev"}}'
     cmds:
@@ -162,7 +158,6 @@ tasks:
 
   test-assert:
     desc: Assert the writer SENT and the reader RECEIVED+DELETED a message (requires a deployed release)
-    dotenv: ['.env']
     cmds:
       - |
         echo "Waiting for both Deployments to be available..."
@@ -192,7 +187,6 @@ tasks:
 
   down:
     desc: Destroy everything (uninstall the Helm release first, then destroy infra)
-    dotenv: ['.env']
     cmds:
       - helm uninstall {{.RELEASE}} --namespace {{.NAMESPACE}} --ignore-not-found --wait || true
       - cd infra && terragrunt run --all destroy --non-interactive

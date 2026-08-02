@@ -44,7 +44,7 @@ CNAME). Argo CD itself is pinned to **v3.4.5** via the kustomize remote base in 
 
 ## Prerequisites
 
-- A GCP project and a GCS bucket for Terraform state (`task argocd:init-state` creates it).
+- A GCP project and a GCS bucket for Terraform state (`task init-state` creates it).
 - An **existing public parent zone** in Cloud DNS (e.g. `gcp.example.com`) whose delegation already
   works (your registrar / DNS provider points at it).
 - `terraform`, `terragrunt` (pinned via tenv), `gcloud`, `kubectl` (provides `kubectl kustomize`),
@@ -53,7 +53,7 @@ CNAME). Argo CD itself is pinned to **v3.4.5** via the kustomize remote base in 
 Configure the lab via a local **`.env`** (loaded automatically by Task's dotenv):
 
 ```bash
-task argocd:init-env   # seeds .env from .env.example
+task init-env   # seeds .env from .env.example
 $EDITOR .env           # fill in project, region, domain, parent zone, state bucket
 ```
 
@@ -75,15 +75,15 @@ PARENT_DNS_PROJECT=my-bootstrap-project # project owning the parent zone (omit i
 ## Stand it up
 
 ```bash
-task argocd:init-state   # one-time: GCS bucket for Terraform state
-task argocd:validate     # cost-free
-task argocd:plan         # cost-free
-task argocd:up           # VPC, Autopilot cluster, reserved IP, managed cert, delegated DNS zone
+task init-state   # one-time: GCS bucket for Terraform state
+task validate     # cost-free
+task plan         # cost-free
+task up           # VPC, Autopilot cluster, reserved IP, managed cert, delegated DNS zone
 
-task argocd:creds        # kube-context for the cluster
-task argocd:deploy       # kubectl apply -k deploy/argocd, wait, then apply the app-of-apps root
-task argocd:verify       # wait for the Gateway IP + managed cert, then GET the HTTPS endpoint
-task argocd:password     # initial admin password (username: admin)
+task creds        # kube-context for the cluster
+task deploy       # kubectl apply -k deploy/argocd, wait, then apply the app-of-apps root
+task verify       # wait for the Gateway IP + managed cert, then GET the HTTPS endpoint
+task password     # initial admin password (username: admin)
 ```
 
 After `deploy`, Argo CD manages itself: the `root` Application syncs `deploy/apps/`, whose
@@ -93,7 +93,7 @@ After `deploy`, Argo CD manages itself: the `root` Application syncs `deploy/app
 ## Tear it down
 
 ```bash
-task argocd:down   # delete the Argo CD apps/install (removes the Gateway/LB), then destroy all infra
+task down   # delete the Argo CD apps/install (removes the Gateway/LB), then destroy all infra
 ```
 
 ## Security caveats

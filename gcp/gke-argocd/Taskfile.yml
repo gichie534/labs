@@ -1,5 +1,10 @@
 version: '3'
 
+# Runtime inputs load once from the lab-root .env (top-level dotenv, resolved relative to
+# the lab root regardless of a task's `dir:`). A missing .env is harmless, so cost-free
+# tasks still run on a clean checkout.
+dotenv: ['.env']
+
 # Lifecycle for the gcp/gke-argocd lab.
 #
 # Infra is Terragrunt (units under infra/, composed by dependency blocks): a VPC, a regional GKE
@@ -41,7 +46,6 @@ tasks:
 
   init-state:
     desc: Create the GCS bucket for Terraform/Terragrunt remote state (idempotent; run once before `up`)
-    dotenv: ['.env']
     cmds:
       - |
         : "${GCP_PROJECT:?set GCP_PROJECT=<project id>}"
@@ -67,7 +71,6 @@ tasks:
   validate:
     desc: Validate every infra unit (cost-free)
     dir: infra
-    dotenv: ['../.env']
     cmds: [terragrunt run --all validate]
 
   lint:
@@ -79,24 +82,20 @@ tasks:
   plan:
     desc: Plan all infra units (cost-free)
     dir: infra
-    dotenv: ['../.env']
     cmds: [terragrunt run --all plan]
 
   up:
     desc: Provision infra — VPC, Autopilot cluster, reserved IP, managed cert, delegated DNS zone (creates cloud resources)
     dir: infra
-    dotenv: ['../.env']
     cmds: [terragrunt run --all apply --non-interactive]
 
   creds:
     desc: Fetch kube-context for the cluster
-    dotenv: ['.env']
     cmds:
       - gcloud container clusters get-credentials {{.CLUSTER}} --region "$GCP_REGION"
 
   deploy:
     desc: Install Argo CD (kustomize HA) + Gateway/cert wiring, then apply the app-of-apps root so Argo CD self-manages
-    dotenv: ['.env']
     cmds:
       # Server-side apply: Argo CD's CRDs are large enough to exceed the client-side
       # last-applied-configuration annotation limit. Argo CD then self-manages with SSA too.
@@ -114,7 +113,6 @@ tasks:
 
   verify:
     desc: Wait for the Gateway IP + managed cert, then GET the public HTTPS endpoint
-    dotenv: ['.env']
     cmds:
       - |
         : "${ARGOCD_DOMAIN:?set ARGOCD_DOMAIN=<the public hostname>}"
@@ -146,7 +144,6 @@ tasks:
 
   down:
     desc: Tear down — delete the Argo CD apps/install (removes the LB/Gateway) then destroy all infra
-    dotenv: ['.env']
     cmds:
       - kubectl delete -f deploy/bootstrap/root-app.yaml --ignore-not-found --wait=true || true
       - kubectl delete -k deploy/argocd --ignore-not-found --wait=true || true
