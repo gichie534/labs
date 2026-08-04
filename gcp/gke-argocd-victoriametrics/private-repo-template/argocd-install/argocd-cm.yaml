@@ -1,0 +1,36 @@
+# Argo CD URL + direct Google OIDC. The OIDC client secret is resolved from the k8s Secret
+# `argocd-oidc` (key oidc.clientSecret), which SecretSync materializes from Secret Manager
+# (see secretsync-argocd-oidc.yaml).
+#
+# The private-repo connection is NOT configured here: Argo CD reads repository credentials only from
+# Secrets labelled `argocd.argoproj.io/secret-type: repository` (the `repositories` field in
+# argocd-cm is legacy and does not support GitHub App via a secret reference). That repository Secret
+# is materialized by SecretSync from Secret Manager — see secretsync-github-repo.yaml.
+#
+# These are your real values, committed to your PRIVATE repo (rendered from .env by `task init-infra-repo`).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: argocd-cm
+data:
+  url: https://__ARGOCD_HOST__
+  oidc.config: |
+    name: Google
+    issuer: https://accounts.google.com
+    clientID: __ARGOCD_OIDC_CLIENT_ID__
+    clientSecret: $argocd-oidc:oidc.clientSecret
+    requestedScopes:
+      - openid
+      - profile
+      - email
+  # The GKE Gateway controller defaults several HTTPRoute fields (parentRefs group/kind, an implicit
+  # `matches: [/]`, and backendRefs group/kind/weight). Ignore those server-set fields cluster-wide so
+  # HTTPRoutes don't show a permanent diff.
+  resource.customizations.ignoreDifferences.gateway.networking.k8s.io_HTTPRoute: |
+    jqPathExpressions:
+      - .spec.parentRefs[].group
+      - .spec.parentRefs[].kind
+      - .spec.rules[].matches
+      - .spec.rules[].backendRefs[].group
+      - .spec.rules[].backendRefs[].kind
+      - .spec.rules[].backendRefs[].weight

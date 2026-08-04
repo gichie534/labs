@@ -1,0 +1,44 @@
+# VictoriaLogs collector: a DaemonSet (vlagent) that tails container logs and ships them to
+# VictoriaLogs.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: victoria-logs-collector
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: https://victoriametrics.github.io/helm-charts/
+    chart: victoria-logs-collector
+    targetRevision: 0.3.7
+    helm:
+      valuesObject:
+        remoteWrite:
+          - url: http://victoria-logs-single-server.observability.svc:9428
+        # GKE Autopilot only permits read-only hostPath under /var/log/. The chart otherwise mounts a
+        # writable /var/lib hostPath for its temp data and a /var/lib read mount (for Minikube). Put
+        # the temp data on an emptyDir and keep only the /var/log read mount (where GKE container logs
+        # live: /var/log/pods, symlinked from /var/log/containers).
+        persistence:
+          volume:
+            emptyDir: {}
+        defaultVolumes:
+          - name: varlog
+            hostPath:
+              path: /var/log
+        defaultVolumeMounts:
+          - name: varlog
+            mountPath: /var/log
+            readOnly: true
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: observability
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true

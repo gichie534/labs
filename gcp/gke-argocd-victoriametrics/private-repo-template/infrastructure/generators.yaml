@@ -1,0 +1,21 @@
+# Sample telemetry generators (flog logs + avalanche metrics). Sourced from manifests/generators.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: generators
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: __INFRA_REPO_URL__
+    targetRevision: main
+    path: manifests/generators
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: generators
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

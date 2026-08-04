@@ -1,0 +1,27 @@
+# The app-of-apps root. Applied once by `task deploy` after Argo CD is up. It reconciles every
+# Application under infrastructure/ from THIS private repo (read via the GitHub App connection
+# configured in argocd-install/argocd-cm.yaml).
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: root
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: __INFRA_REPO_URL__
+    targetRevision: main
+    path: infrastructure
+    directory:
+      recurse: true
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: argocd
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

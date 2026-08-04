@@ -1,0 +1,2 @@
+# GitHub App private key (seeded into Secret Manager by Terraform; never committed)
+*.pem

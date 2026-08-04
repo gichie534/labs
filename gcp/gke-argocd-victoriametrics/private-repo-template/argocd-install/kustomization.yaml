@@ -1,0 +1,24 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# The one-time Argo CD install, applied imperatively by `task deploy` (Argo CD can't install itself).
+# It brings up Argo CD (HA), configures SSO + RBAC + the private-repo connection, and creates the
+# SecretSync resources that materialize the two Argo CD secrets from Secret Manager. After this,
+# Argo CD reconciles everything else from `infrastructure/` via the app-of-apps.
+#
+# No secret is created by hand here: the `argocd-oidc` Secret and the `github-repo` repository
+# Secret are produced by SecretSync from Secret Manager, keyless via Workload Identity.
+
+namespace: argocd
+
+resources:
+  - namespace.yaml
+  - https://github.com/argoproj/argo-cd/manifests/ha/cluster-install?ref=v3.4.5
+  - argocd-secret-sync-sa.yaml
+  - secretsync-argocd-oidc.yaml
+  - secretsync-github-repo.yaml
+
+patches:
+  - path: argocd-cmd-params-cm.yaml
+  - path: argocd-cm.yaml
+  - path: argocd-rbac-cm.yaml

@@ -1,0 +1,30 @@
+# flog continuously prints fake JSON access logs to stdout; the VictoriaLogs collector tails the
+# container log and ships them to VictoriaLogs. requests == limits keeps GKE Autopilot from mutating
+# the pod (which would otherwise leave Argo CD perpetually OutOfSync).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: flog
+  labels:
+    app: flog
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: flog
+  template:
+    metadata:
+      labels:
+        app: flog
+    spec:
+      containers:
+        - name: flog
+          image: mingrammer/flog:0.4.3
+          args: ["-f", "json", "-d", "1s", "-l"]
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 100m
+              memory: 128Mi

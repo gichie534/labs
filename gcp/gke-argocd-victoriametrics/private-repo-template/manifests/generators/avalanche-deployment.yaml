@@ -1,0 +1,33 @@
+# avalanche serves a synthetic Prometheus/OpenMetrics endpoint on :9001, giving vmagent something
+# real to scrape. requests == limits to avoid Autopilot mutation (see flog).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: avalanche
+  labels:
+    app: avalanche
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: avalanche
+  template:
+    metadata:
+      labels:
+        app: avalanche
+    spec:
+      containers:
+        - name: avalanche
+          image: quay.io/prometheuscommunity/avalanche:v0.7.0
+          args: ["--port=9001"]
+          ports:
+            - name: metrics
+              containerPort: 9001
+          # avalanche's default series set needs more than a token amount of memory; 128Mi OOMs.
+          resources:
+            requests:
+              cpu: 100m
+              memory: 512Mi
+            limits:
+              cpu: 100m
+              memory: 512Mi

@@ -1,0 +1,29 @@
+# Makes Argo CD self-manage its own install. This child Application (created by the app-of-apps root)
+# points Argo CD at the argocd-install/ overlay it was bootstrapped from, so after the one-time
+# `task deploy`, any drift in the Argo CD install, SSO/RBAC config, or the SecretSync resources is
+# reconciled from Git by Argo CD itself.
+#
+# ServerSideApply avoids the client-side "annotations too long" failure on Argo CD's large CRDs.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: argocd
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: __INFRA_REPO_URL__
+    targetRevision: main
+    path: argocd-install
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: argocd
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - ServerSideApply=true
+      - CreateNamespace=true

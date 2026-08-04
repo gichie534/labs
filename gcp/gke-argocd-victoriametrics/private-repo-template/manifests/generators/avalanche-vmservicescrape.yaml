@@ -1,0 +1,12 @@
+# Tells the VictoriaMetrics operator's vmagent to scrape the avalanche Service. vm-k8s-stack selects
+# scrape objects across all namespaces by default, so this is picked up in the generators namespace.
+apiVersion: operator.victoriametrics.com/v1beta1
+kind: VMServiceScrape
+metadata:
+  name: avalanche
+spec:
+  selector:
+    matchLabels:
+      app: avalanche
+  endpoints:
+    - port: metrics

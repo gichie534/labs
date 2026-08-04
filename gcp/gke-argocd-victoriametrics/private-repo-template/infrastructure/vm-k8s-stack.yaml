@@ -1,0 +1,149 @@
+# VictoriaMetrics k8s stack: VMSingle + vmagent + kube-state-metrics + Grafana. Alerting is off to
+# stay lean; node-exporter is off because GKE Autopilot blocks its host mounts (vmagent still scrapes
+# the kubelet/cAdvisor + kube-state-metrics).
+#
+# Grafana's Google OAuth CLIENT SECRET never becomes a k8s Secret: it's mounted as an in-memory file
+# via the Secret Manager CSI add-on (the SecretProviderClass in grafana.extraObjects) and read by
+# grafana.ini with $__file{...}. Grafana's KSA is keyless — annotated to impersonate its GSA (which
+# holds the secretAccessor grant) via Workload Identity.
+# Grafana's public route is configured natively via the chart (route.main), attached to the shared
+# `common` Gateway; external-dns publishes its A record. Two datasources: VictoriaMetrics + VictoriaLogs.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: vm-k8s-stack
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: https://victoriametrics.github.io/helm-charts/
+    chart: victoria-metrics-k8s-stack
+    targetRevision: 0.87.0
+    helm:
+      valuesObject:
+        defaultRules:
+          create: false
+        alertmanager:
+          enabled: false
+        vmalert:
+          enabled: false
+        vmagent:
+          enabled: true
+        vmsingle:
+          enabled: true
+          spec:
+            retentionPeriod: "1d"
+        kube-state-metrics:
+          enabled: true
+        prometheus-node-exporter:
+          enabled: false
+        # GKE has a managed control plane: these components aren't reachable, and the chart would try
+        # to create their scrape Services in the managed kube-system namespace (forbidden on Autopilot).
+        kubeControllerManager:
+          enabled: false
+        kubeScheduler:
+          enabled: false
+        kubeEtcd:
+          enabled: false
+        kubeProxy:
+          enabled: false
+        coreDns:
+          enabled: false
+        kubeDns:
+          enabled: false
+        grafana:
+          enabled: true
+          fullnameOverride: grafana
+          serviceAccount:
+            create: true
+            name: grafana
+            annotations:
+              iam.gke.io/gcp-service-account: grafana-oauth@__PROJECT_ID__.iam.gserviceaccount.com
+          service:
+            type: ClusterIP
+          plugins:
+            - victoriametrics-metrics-datasource
+            - victoriametrics-logs-datasource
+          additionalDataSources:
+            - name: VictoriaLogs
+              type: victoriametrics-logs-datasource
+              access: proxy
+              url: http://victoria-logs-single-server.observability.svc:9428
+          route:
+            main:
+              enabled: true
+              apiVersion: gateway.networking.k8s.io/v1
+              kind: HTTPRoute
+              hostnames:
+                - __GRAFANA_HOST__
+              parentRefs:
+                - name: common
+                  namespace: platform
+                  sectionName: https
+              httpsRedirect: false
+          # CSI file-mount of the OAuth client secret from Secret Manager (GKE add-on).
+          extraVolumes:
+            - name: grafana-oauth
+              csi:
+                driver: secrets-store-gke.csi.k8s.io
+                readOnly: true
+                volumeAttributes:
+                  secretProviderClass: grafana-oauth
+          extraVolumeMounts:
+            - name: grafana-oauth
+              mountPath: /etc/secrets/grafana
+              readOnly: true
+          extraObjects:
+            - apiVersion: secrets-store.csi.x-k8s.io/v1
+              kind: SecretProviderClass
+              metadata:
+                name: grafana-oauth
+              spec:
+                provider: gke
+                parameters:
+                  secrets: |
+                    - resourceName: "projects/__PROJECT_ID__/secrets/grafana-oauth-client-secret/versions/latest"
+                      path: "client-secret"
+            # Point the GKE LB health check at /api/health (200) instead of the default "/" (302 to
+            # /login, which the LB treats as unhealthy).
+            - apiVersion: networking.gke.io/v1
+              kind: HealthCheckPolicy
+              metadata:
+                name: grafana
+              spec:
+                default:
+                  config:
+                    type: HTTP
+                    httpHealthCheck:
+                      requestPath: /api/health
+                      port: 3000
+                targetRef:
+                  group: ""
+                  kind: Service
+                  name: grafana
+          grafana.ini:
+            server:
+              root_url: https://__GRAFANA_HOST__
+            auth.google:
+              enabled: true
+              client_id: __GRAFANA_OAUTH_CLIENT_ID__
+              client_secret: $__file{/etc/secrets/grafana/client-secret}
+              scopes: openid email profile
+              auth_url: https://accounts.google.com/o/oauth2/auth
+              token_url: https://oauth2.googleapis.com/token
+              api_url: https://openidconnect.googleapis.com/v1/userinfo
+              allowed_domains: __WORKSPACE_DOMAIN__
+              allow_sign_up: true
+              role_attribute_path: "email=='__GRAFANA_ADMIN_EMAIL__' && 'Admin' || 'Viewer'"
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: observability
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true

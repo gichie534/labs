@@ -1,0 +1,41 @@
+# external-dns: watches Gateway API HTTPRoutes and writes A records into the lab's Cloud DNS zone.
+# Keyless via Workload Identity: its KSA (external-dns/external-dns, created by the chart) is
+# annotated to impersonate the GSA that the lab's infra/secrets unit granted roles/dns.admin.
+# The GCP project is auto-detected from the metadata server; no domain-filter is needed because the
+# grant is scoped to the lab project (the parent zone lives in a different project).
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: external-dns
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: https://kubernetes-sigs.github.io/external-dns/
+    chart: external-dns
+    targetRevision: 1.21.1
+    helm:
+      valuesObject:
+        provider:
+          name: google
+        sources:
+          - gateway-httproute
+        policy: upsert-only
+        txtOwnerId: gke-argocd-victoriametrics
+        serviceAccount:
+          create: true
+          name: external-dns
+          annotations:
+            iam.gke.io/gcp-service-account: external-dns@__PROJECT_ID__.iam.gserviceaccount.com
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: external-dns
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true

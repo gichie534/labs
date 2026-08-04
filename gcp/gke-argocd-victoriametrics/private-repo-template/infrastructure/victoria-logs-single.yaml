@@ -1,0 +1,32 @@
+# VictoriaLogs single-node: log storage + UI (port 9428). The chart's optional Vector collector is
+# disabled — logs are shipped by the dedicated victoria-logs-collector. Service resolves at
+# victoria-logs-single-server.observability.svc:9428 (referenced by the collector + Grafana datasource).
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: victoria-logs-single
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: https://victoriametrics.github.io/helm-charts/
+    chart: victoria-logs-single
+    targetRevision: 0.13.9
+    helm:
+      valuesObject:
+        vector:
+          enabled: false
+        server:
+          retentionPeriod: "1d"
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: observability
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true

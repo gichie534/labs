@@ -1,0 +1,227 @@
+version: '3'
+
+# Runtime inputs load once from the lab-root .env (top-level dotenv). Cost-free tasks still run on a
+# clean checkout with no .env.
+dotenv: ['.env']
+
+# Lifecycle for the gcp/gke-argocd-victoriametrics lab: a GKE Autopilot cluster running Argo CD
+# (direct Google OIDC SSO) that GitOps-installs the VictoriaMetrics observability stack (VMSingle +
+# Grafana + VictoriaLogs + collector) and a sample log/metric generator, all reconciled from a
+# PRIVATE infra repo.
+#
+# Secrets are delivered from Secret Manager via the GKE managed add-ons — never hand-created, never
+# committed: Grafana's client secret is a CSI file mount; the Argo CD OIDC secret + GitHub App key
+# are materialized as k8s Secrets by SecretSync. Auth is keyless (Workload Identity principals).
+#
+# The only imperative steps are the GitOps bootstrap itself: install Argo CD + apply the app-of-apps.
+#
+# Flow: task init-env -> fill .env -> task init-infra-repo -> push $INFRA_REPO_DIR to your private
+# repo -> task init-state -> task up -> task seed-secrets -> task creds -> task deploy -> task verify.
+
+vars:
+  CLUSTER: gke-argocd-victoriametrics
+  ARGOCD_NS: argocd
+
+tasks:
+  default:
+    cmds: [task --list]
+    silent: true
+
+  init-env:
+    desc: Seed .env from .env.example (no-op if .env already exists)
+    cmds:
+      - |
+        if [ -f .env ]; then
+          echo ".env already exists — leaving it untouched."
+        else
+          cp .env.example .env
+          echo "Created .env from .env.example — edit it and fill in your values."
+        fi
+
+  init-infra-repo:
+    desc: Render private-repo-template into $INFRA_REPO_DIR with your .env values (run once, then git push it)
+    cmds:
+      - |
+        : "${INFRA_REPO_DIR:?set INFRA_REPO_DIR=<local path to your private infra repo checkout>}"
+        : "${INFRA_REPO_URL:?set INFRA_REPO_URL}"
+        : "${GCP_PROJECT:?set GCP_PROJECT}"
+        : "${BASE_DOMAIN:?set BASE_DOMAIN}"
+        : "${WORKSPACE_DOMAIN:?set WORKSPACE_DOMAIN}"
+        : "${ARGOCD_OIDC_CLIENT_ID:?set ARGOCD_OIDC_CLIENT_ID}"
+        : "${ARGOCD_ADMIN_EMAIL:?set ARGOCD_ADMIN_EMAIL}"
+        : "${GRAFANA_OAUTH_CLIENT_ID:?set GRAFANA_OAUTH_CLIENT_ID}"
+        : "${GRAFANA_ADMIN_EMAIL:?set GRAFANA_ADMIN_EMAIL}"
+        : "${GITHUB_APP_ID:?set GITHUB_APP_ID}"
+        : "${GITHUB_APP_INSTALLATION_ID:?set GITHUB_APP_INSTALLATION_ID}"
+
+        mkdir -p "$INFRA_REPO_DIR"
+        cp -R private-repo-template/. "$INFRA_REPO_DIR/"
+
+        ARGOCD_HOST="argocd.${BASE_DOMAIN}"
+        GRAFANA_HOST="grafana.${BASE_DOMAIN}"
+
+        find "$INFRA_REPO_DIR" -type f \( -name '*.yaml' -o -name '*.md' \) | while IFS= read -r f; do
+          sed -i.bak \
+            -e "s|__INFRA_REPO_URL__|${INFRA_REPO_URL}|g" \
+            -e "s|__PROJECT_ID__|${GCP_PROJECT}|g" \
+            -e "s|__ARGOCD_HOST__|${ARGOCD_HOST}|g" \
+            -e "s|__GRAFANA_HOST__|${GRAFANA_HOST}|g" \
+            -e "s|__ARGOCD_OIDC_CLIENT_ID__|${ARGOCD_OIDC_CLIENT_ID}|g" \
+            -e "s|__ARGOCD_ADMIN_EMAIL__|${ARGOCD_ADMIN_EMAIL}|g" \
+            -e "s|__GRAFANA_OAUTH_CLIENT_ID__|${GRAFANA_OAUTH_CLIENT_ID}|g" \
+            -e "s|__GRAFANA_ADMIN_EMAIL__|${GRAFANA_ADMIN_EMAIL}|g" \
+            -e "s|__WORKSPACE_DOMAIN__|${WORKSPACE_DOMAIN}|g" \
+            -e "s|__GITHUB_APP_ID__|${GITHUB_APP_ID}|g" \
+            -e "s|__GITHUB_APP_INSTALLATION_ID__|${GITHUB_APP_INSTALLATION_ID}|g" \
+            "$f"
+          rm -f "$f.bak"
+        done
+        echo "Rendered into $INFRA_REPO_DIR. Review, then: (cd \"$INFRA_REPO_DIR\" && git add -A && git commit -m 'init' && git push)"
+
+  init-state:
+    desc: Enable required project APIs + create the GCS state bucket (idempotent; run once before `up`)
+    cmds:
+      - |
+        : "${GCP_PROJECT:?set GCP_PROJECT=<project id>}"
+        : "${TF_STATE_BUCKET:?set TF_STATE_BUCKET=<bucket name (no gs:// prefix)>}"
+        echo "Enabling required APIs..."
+        gcloud services enable container.googleapis.com secretmanager.googleapis.com dns.googleapis.com \
+          certificatemanager.googleapis.com --project "$GCP_PROJECT"
+        LOCATION="${GCP_REGION:-us-central1}"
+        if gcloud storage buckets describe "gs://$TF_STATE_BUCKET" --project "$GCP_PROJECT" >/dev/null 2>&1; then
+          echo "Bucket gs://$TF_STATE_BUCKET already exists — nothing to do."
+        else
+          gcloud storage buckets create "gs://$TF_STATE_BUCKET" \
+            --project "$GCP_PROJECT" --location "$LOCATION" \
+            --uniform-bucket-level-access --public-access-prevention
+        fi
+        gcloud storage buckets update "gs://$TF_STATE_BUCKET" --versioning
+
+  fmt:
+    desc: Format Terragrunt HCL
+    cmds:
+      - terragrunt hcl format
+
+  validate:
+    desc: Validate every infra unit (cost-free)
+    dir: infra
+    cmds: [terragrunt run --all validate]
+
+  lint:
+    desc: Lint Terraform/Terragrunt and render the template's kustomize overlays (cost-free)
+    cmds:
+      - tflint --recursive
+      - kubectl kustomize private-repo-template/argocd-install > /dev/null
+      - kubectl kustomize private-repo-template/manifests/generators > /dev/null
+
+  plan:
+    desc: Plan all infra units (cost-free)
+    dir: infra
+    cmds: [terragrunt run --all plan]
+
+  up:
+    desc: Provision infra — VPC, cluster (+ SM add-ons), certs, DNS zone, SM secret containers + workload IAM
+    dir: infra
+    cmds: [terragrunt run --all apply --non-interactive]
+
+  seed-secrets:
+    desc: Push secret VALUES into the Secret Manager containers (from .env / the .pem). Run after `up`.
+    cmds:
+      - |
+        : "${GCP_PROJECT:?set GCP_PROJECT}"
+        : "${ARGOCD_OIDC_CLIENT_SECRET:?set ARGOCD_OIDC_CLIENT_SECRET}"
+        : "${GRAFANA_OAUTH_CLIENT_SECRET:?set GRAFANA_OAUTH_CLIENT_SECRET}"
+        : "${GITHUB_APP_PRIVATE_KEY_PATH:?set GITHUB_APP_PRIVATE_KEY_PATH}"
+        : "${GITHUB_APP_ID:?set GITHUB_APP_ID}"
+        : "${GITHUB_APP_INSTALLATION_ID:?set GITHUB_APP_INSTALLATION_ID}"
+        : "${INFRA_REPO_URL:?set INFRA_REPO_URL}"
+        test -f "$GITHUB_APP_PRIVATE_KEY_PATH" || { echo "no .pem at $GITHUB_APP_PRIVATE_KEY_PATH"; exit 1; }
+        # Adds a new version (latest wins). The containers are created by `task up` (infra/secrets/*).
+        printf '%s' "$ARGOCD_OIDC_CLIENT_SECRET"     | gcloud secrets versions add argocd-oidc-client-secret   --project "$GCP_PROJECT" --data-file=-
+        printf '%s' "$GRAFANA_OAUTH_CLIENT_SECRET"    | gcloud secrets versions add grafana-oauth-client-secret  --project "$GCP_PROJECT" --data-file=-
+        gcloud secrets versions add github-app-private-key --project "$GCP_PROJECT" --data-file="$GITHUB_APP_PRIVATE_KEY_PATH"
+        # The Argo CD repository Secret is assembled by SecretSync from these too (Argo CD needs them
+        # inline in a secret-type: repository Secret).
+        printf '%s' "$GITHUB_APP_ID"                  | gcloud secrets versions add github-app-id               --project "$GCP_PROJECT" --data-file=-
+        printf '%s' "$GITHUB_APP_INSTALLATION_ID"     | gcloud secrets versions add github-app-installation-id  --project "$GCP_PROJECT" --data-file=-
+        printf '%s' "$INFRA_REPO_URL"                 | gcloud secrets versions add github-repo-url             --project "$GCP_PROJECT" --data-file=-
+        echo "Seeded 6 secret versions."
+
+  creds:
+    desc: Fetch kube-context for the cluster
+    cmds:
+      - gcloud container clusters get-credentials {{.CLUSTER}} --region "$GCP_REGION"
+
+  deploy:
+    desc: Bootstrap GitOps — install Argo CD from your private repo's argocd-install/, then apply the app-of-apps
+    cmds:
+      - |
+        : "${INFRA_REPO_DIR:?set INFRA_REPO_DIR (run task init-infra-repo first, and git push it)}"
+        test -d "$INFRA_REPO_DIR/argocd-install" || { echo "no $INFRA_REPO_DIR/argocd-install — run task init-infra-repo"; exit 1; }
+
+        echo "Installing Argo CD + SSO/RBAC + repo connection + SecretSyncs (no secrets created by hand)..."
+        kubectl apply -k "$INFRA_REPO_DIR/argocd-install" --server-side
+
+        echo "Waiting for the Argo CD server..."
+        kubectl -n {{.ARGOCD_NS}} rollout status deploy/argocd-server --timeout=300s
+
+        echo "Applying the app-of-apps root (reconciles everything else from the private repo)..."
+        kubectl apply -f "$INFRA_REPO_DIR/root-app/app-of-apps.yaml"
+        echo "Done. Argo CD: https://argocd.${BASE_DOMAIN}   Grafana: https://grafana.${BASE_DOMAIN}"
+
+  password:
+    desc: Print the initial Argo CD admin password (break-glass; SSO users log in via Google)
+    cmds:
+      - kubectl -n {{.ARGOCD_NS}} get secret argocd-initial-admin-secret -o jsonpath='{.data.password}' | base64 -d
+      - echo
+
+  verify:
+    desc: Wait for the Gateway IP + managed certs + external-dns records, then GET both public endpoints
+    cmds:
+      - |
+        : "${BASE_DOMAIN:?set BASE_DOMAIN}"
+        ARGOCD_HOST="argocd.${BASE_DOMAIN}"; GRAFANA_HOST="grafana.${BASE_DOMAIN}"
+        echo "Waiting for the Gateway to report an address..."
+        for i in $(seq 1 60); do
+          IP=$(kubectl -n platform get gateway common -o jsonpath='{.status.addresses[0].value}' 2>/dev/null || true)
+          [ -n "$IP" ] && break
+          sleep 10
+        done
+        : "${IP:?the Gateway never reported an address — is the platform app synced?}"
+        echo "Gateway IP: $IP"
+        echo "Probing both endpoints (external-dns + first managed-cert issuance can take 10-20m)..."
+        ok_a=0; ok_g=0
+        for i in $(seq 1 120); do
+          [ "$ok_a" -eq 0 ] && curl -fsS --max-time 10 "https://$ARGOCD_HOST/healthz?full=true" >/dev/null 2>&1 && { echo "OK: Argo CD https://$ARGOCD_HOST/"; ok_a=1; }
+          [ "$ok_g" -eq 0 ] && curl -fsS --max-time 10 "https://$GRAFANA_HOST/api/health" >/dev/null 2>&1 && { echo "OK: Grafana https://$GRAFANA_HOST/"; ok_g=1; }
+          [ "$ok_a" -eq 1 ] && [ "$ok_g" -eq 1 ] && exit 0
+          sleep 15
+        done
+        echo "FAILED: not both endpoints answered (check cert status, DNS, external-dns logs)" >&2
+        exit 1
+
+  test:
+    desc: Cheap smoke test — render the template kustomize overlays and validate infra (cost-free)
+    cmds:
+      - kubectl kustomize private-repo-template/argocd-install > /dev/null
+      - kubectl kustomize private-repo-template/manifests/generators > /dev/null
+      - task: validate
+
+  down:
+    desc: Tear down — delete the app-of-apps + Argo CD, clean DNS records, then destroy infra
+    cmds:
+      - kubectl delete -f "$INFRA_REPO_DIR/root-app/app-of-apps.yaml" --ignore-not-found --wait=true || true
+      - kubectl delete -k "$INFRA_REPO_DIR/argocd-install" --ignore-not-found --wait=true || true
+      # external-dns runs policy=upsert-only, so it never deletes its records. Remove every non-NS/SOA
+      # record so Terragrunt can destroy the managed zone.
+      - |
+        : "${GCP_PROJECT:?set GCP_PROJECT}"
+        : "${BASE_DOMAIN:?set BASE_DOMAIN}"
+        ZONE="$(echo "$BASE_DOMAIN" | tr '.' '-')"
+        if gcloud dns managed-zones describe "$ZONE" --project "$GCP_PROJECT" >/dev/null 2>&1; then
+          gcloud dns record-sets list --zone "$ZONE" --project "$GCP_PROJECT" --format="value(name,type)" | while read -r rname rtype; do
+            case "$rtype" in NS|SOA) continue;; esac
+            gcloud dns record-sets delete "$rname" --zone "$ZONE" --project "$GCP_PROJECT" --type "$rtype" || true
+          done
+        fi
+      - cd infra && terragrunt run --all destroy --non-interactive

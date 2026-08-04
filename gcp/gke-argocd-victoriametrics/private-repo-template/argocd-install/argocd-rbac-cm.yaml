@@ -1,0 +1,11 @@
+# Email-based RBAC (no groups): the admin email gets role:admin, everyone else who can sign in
+# (your Workspace domain) gets role:readonly.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: argocd-rbac-cm
+data:
+  scopes: '[email]'
+  policy.default: role:readonly
+  policy.csv: |
+    g, __ARGOCD_ADMIN_EMAIL__, role:admin

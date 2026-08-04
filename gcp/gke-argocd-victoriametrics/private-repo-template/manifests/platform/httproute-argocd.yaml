@@ -1,0 +1,19 @@
+# Routes HTTPS traffic for the Argo CD hostname to argocd-server (port 80, insecure behind the
+# Gateway). Cross-namespace: this route (argocd ns) attaches to the `common` Gateway (platform ns);
+# external-dns reads the hostname to publish the A record.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: argocd-server
+  namespace: argocd
+spec:
+  parentRefs:
+    - name: common
+      namespace: platform
+      sectionName: https
+  hostnames:
+    - __ARGOCD_HOST__
+  rules:
+    - backendRefs:
+        - name: argocd-server
+          port: 80

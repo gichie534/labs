@@ -1,0 +1,26 @@
+# The one shared global external Application Load Balancer for the whole lab (one LB, one IP). Named
+# `common` because it fronts both Argo CD (argocd ns) and Grafana (observability ns); it lives in its
+# own `platform` namespace. TLS via the Certificate Manager certmap "obs" (two SNI-matched certs).
+# No reserved IP: external-dns publishes A records from the attached HTTPRoutes.
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: common
+  namespace: platform
+  annotations:
+    networking.gke.io/certmap: obs
+spec:
+  gatewayClassName: gke-l7-global-external-managed
+  listeners:
+    - name: http
+      protocol: HTTP
+      port: 80
+      allowedRoutes:
+        namespaces:
+          from: All
+    - name: https
+      protocol: HTTPS
+      port: 443
+      allowedRoutes:
+        namespaces:
+          from: All

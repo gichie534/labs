@@ -1,0 +1,23 @@
+# Shared cluster front door: the "common" Gateway (one external LB), the HTTP->HTTPS redirect, the
+# Argo CD HTTPRoute + health check. Sourced from manifests/platform in this repo.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: platform
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: __INFRA_REPO_URL__
+    targetRevision: main
+    path: manifests/platform
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: platform
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
