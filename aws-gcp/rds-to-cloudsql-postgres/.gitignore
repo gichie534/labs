@@ -1,0 +1,2 @@
+# Migration artifacts (dumps, generated SQL, parity snapshots, restore logs).
+_migration/

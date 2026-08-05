@@ -1,0 +1,185 @@
+version: '3'
+
+# Runtime inputs load once from the lab-root .env (top-level dotenv, resolved relative to the lab
+# root regardless of a task's `dir:`). A missing .env is harmless, so cost-free tasks still run on a
+# clean checkout.
+dotenv: ['.env']
+
+# Lifecycle for the aws-gcp/rds-to-cloudsql-postgres lab.
+#
+# Migrates a production-shaped PostgreSQL database from Amazon RDS (source) to Cloud SQL for
+# PostgreSQL (target) using the section-based pg_dump / pg_restore flow, with generic
+# catalog-driven role creation, ownership reassignment, and a strict parity gate.
+#
+# The migration runs on a Compute Engine host INSIDE the GCP VPC (reached over IAP SSH), so it can
+# talk to the TARGET Cloud SQL over its private IP; it reaches the SOURCE RDS over RDS's public
+# endpoint (which allowlists the host's egress IP). seed/migrate/verify sync db/ to the host and run
+# there.
+#
+# Flow:
+#   1. init-state -> one-time: create the GCS bucket for Terraform state.
+#   2. up         -> RDS + VPC (AWS); Cloud SQL (private) + VPC/PSA + migration host (GCP).
+#   3. seed       -> populate RDS with schemas, roles, grants, sequences, partitions, views, data.
+#   4. migrate    -> dump RDS, create roles, restore, reassign owners, set passwords on Cloud SQL.
+#   5. verify     -> strict source-vs-target parity diff (structure + content).
+#   6. down       -> destroy all infra.
+#
+# Only init-state, up, seed, and migrate touch cloud resources. fmt/validate/plan are cost-free.
+# Config is loaded from a local `.env` (see .env.example); `.env` is gitignored.
+
+vars:
+  # Fixed working directory on the migration host.
+  REMOTE_DIR: /tmp/rds2cloudsql
+  # Shared shell prelude that resolves the migration host + database endpoints from Terraform
+  # outputs. Inlined into task bodies (not a `sh:` var) because `sh:` vars do NOT inherit a task's
+  # dotenv env, which would make terragrunt read an empty TF_STATE_BUCKET and generate a placeholder
+  # backend. The source/target CONNINFO strings are assembled here and written to an env file ON THE
+  # HOST (so passwords never appear on a command line). Keep passwords free of spaces and quotes.
+  HOST_ENV: |
+    : "${RDS_MASTER_USERNAME:?set RDS_MASTER_USERNAME}"
+    : "${RDS_MASTER_PASSWORD:?set RDS_MASTER_PASSWORD}"
+    : "${CLOUDSQL_ADMIN_PASSWORD:?set CLOUDSQL_ADMIN_PASSWORD}"
+    : "${APP_DB_PASSWORD:?set APP_DB_PASSWORD}"
+    ZONE="$(cd infra/gcp/migration-host && terragrunt output -raw zone)"
+    HOST="$(cd infra/gcp/migration-host && terragrunt output -raw name)"
+    RDS_HOST="$(cd infra/aws/rds && terragrunt output -raw address)"
+    CSQL_IP="$(cd infra/gcp/cloudsql && terragrunt output -raw private_ip_address)"
+
+tasks:
+  default:
+    cmds: [task --list]
+    silent: true
+
+  init-env:
+    desc: Create a local .env from the template (no-op if .env already exists, so it never clobbers your values)
+    cmds:
+      - |
+        if [ -f .env ]; then
+          echo ".env already exists — leaving it untouched."
+        else
+          cp .env.example .env
+          echo "Created .env from .env.example — fill in your values."
+        fi
+
+  init-state:
+    desc: Create the GCS bucket for Terraform/Terragrunt remote state (idempotent; run once before `up`)
+    cmds:
+      - |
+        : "${GCP_PROJECT:?set GCP_PROJECT=<project id>}"
+        : "${TF_STATE_BUCKET:?set TF_STATE_BUCKET=<bucket name (no gs:// prefix)>}"
+        LOCATION="${GCP_REGION:-us-central1}"
+        if gcloud storage buckets describe "gs://$TF_STATE_BUCKET" --project "$GCP_PROJECT" >/dev/null 2>&1; then
+          echo "Bucket gs://$TF_STATE_BUCKET already exists — nothing to do."
+        else
+          echo "Creating gs://$TF_STATE_BUCKET in $LOCATION..."
+          gcloud storage buckets create "gs://$TF_STATE_BUCKET" \
+            --project "$GCP_PROJECT" \
+            --location "$LOCATION" \
+            --uniform-bucket-level-access \
+            --public-access-prevention
+        fi
+        gcloud storage buckets update "gs://$TF_STATE_BUCKET" --versioning
+
+  fmt:
+    desc: Format Terragrunt HCL
+    cmds:
+      - terragrunt hcl format
+
+  validate:
+    desc: Validate every infra unit (cost-free)
+    dir: infra
+    cmds: [terragrunt run --all validate]
+
+  lint:
+    desc: Lint Terraform/Terragrunt and shell-check the migration scripts
+    cmds:
+      - tflint --recursive
+      - |
+        if command -v shellcheck >/dev/null 2>&1; then
+          shellcheck db/seed/*.sh db/migrate/*.sh db/verify/*.sh
+        else
+          echo "WARN: shellcheck not installed — skipping shell lint (brew install shellcheck)."
+        fi
+
+  plan:
+    desc: Plan all infra units (cost-free)
+    dir: infra
+    cmds: [terragrunt run --all plan]
+
+  up:
+    desc: Provision infra — RDS + VPC (AWS); Cloud SQL (private) + VPC/PSA + migration host (GCP) (creates cloud resources)
+    dir: infra
+    cmds: [terragrunt run --all apply --non-interactive]
+
+  seed:
+    desc: Populate the SOURCE RDS with a production-shaped database (schemas, roles, grants, data) — runs on the migration host
+    cmds:
+      - task: on-host
+        vars: { CMD: './db/seed/run_seed.sh' }
+
+  migrate:
+    desc: Migrate SOURCE RDS -> TARGET Cloud SQL (dump, roles, restore, owners, passwords) — runs on the migration host
+    cmds:
+      - task: on-host
+        vars: { CMD: './db/migrate/run_all.sh' }
+
+  verify:
+    desc: Strict parity gate — diff a structure+content snapshot of source vs target (fails on any diff) — runs on the migration host
+    cmds:
+      - task: on-host
+        vars: { CMD: './db/verify/verify.sh' }
+
+  all:
+    desc: After `up`, chain seed -> migrate -> verify (all on the migration host)
+    cmds:
+      - task: seed
+      - task: migrate
+      - task: verify
+
+  ssh:
+    desc: Open an interactive SSH session on the migration host (over IAP)
+    cmds:
+      - |
+        ZONE="$(cd infra/gcp/migration-host && terragrunt output -raw zone)"
+        HOST="$(cd infra/gcp/migration-host && terragrunt output -raw name)"
+        gcloud compute ssh "$HOST" --zone "$ZONE" --tunnel-through-iap
+
+  on-host:
+    internal: true
+    # Sync db/ to the migration host, write the connection env there, and run CMD from the lab's db/
+    # working dir. CMD must be a fixed script path (no shell expansion) — it is appended into a
+    # single-quoted remote command, so it runs on the host, not locally.
+    cmds:
+      - |
+        {{.HOST_ENV}}
+        RD="{{.REMOTE_DIR}}"
+        echo "==> Waiting for the migration host and its PostgreSQL client (startup script may still be running)"
+        ready=""
+        for i in $(seq 1 20); do
+          if gcloud compute ssh "$HOST" --zone "$ZONE" --tunnel-through-iap --quiet \
+               --command "command -v pg_dump >/dev/null 2>&1"; then ready=1; break; fi
+          echo "   not ready yet ($i/20) — retrying in 15s"; sleep 15
+        done
+        [ -n "$ready" ] || { echo "migration host never became ready" >&2; exit 1; }
+
+        echo "==> Syncing db/ to $HOST:$RD"
+        gcloud compute ssh "$HOST" --zone "$ZONE" --tunnel-through-iap --quiet --command "mkdir -p $RD && rm -rf $RD/db"
+        gcloud compute scp --recurse --zone "$ZONE" --tunnel-through-iap --quiet ./db "$HOST:$RD/"
+
+        echo "==> Writing the connection env on the host (chmod 600)"
+        gcloud compute ssh "$HOST" --zone "$ZONE" --tunnel-through-iap --quiet \
+          --command "cat > $RD/.migrate.env && chmod 600 $RD/.migrate.env" <<EOF
+        export SOURCE_URL="host=$RDS_HOST port=5432 dbname=app user=$RDS_MASTER_USERNAME password=$RDS_MASTER_PASSWORD sslmode=require"
+        export TARGET_URL="host=$CSQL_IP port=5432 dbname=app user=postgres password=$CLOUDSQL_ADMIN_PASSWORD sslmode=require"
+        export APP_DB_PASSWORD="$APP_DB_PASSWORD"
+        export WORKDIR="$RD/_migration"
+        EOF
+
+        echo "==> Running on $HOST: {{.CMD}}"
+        gcloud compute ssh "$HOST" --zone "$ZONE" --tunnel-through-iap --quiet \
+          --command 'cd '"$RD"' && chmod +x db/seed/*.sh db/migrate/*.sh db/verify/*.sh && set -a && . ./.migrate.env && set +a && {{.CMD}}'
+
+  down:
+    desc: Destroy everything (all infra, AWS + GCP)
+    dir: infra
+    cmds: [terragrunt run --all destroy --non-interactive]
