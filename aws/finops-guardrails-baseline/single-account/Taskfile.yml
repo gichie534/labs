@@ -1,0 +1,257 @@
+version: '3'
+
+# Runtime inputs load once from the lab-root .env (top-level dotenv, resolved relative to
+# the lab root regardless of a task's `dir:`). A missing .env is harmless, so cost-free
+# tasks still run on a clean checkout.
+dotenv: ['.env']
+
+# Lifecycle for the aws/finops-guardrails-baseline/single-account lab — the cost guardrails you want in
+# place BEFORE you need them, in one standalone AWS account.
+#
+# What gets created (all in us-east-1, because every billing API is global via that endpoint):
+#   lookups            no resources — finds the AWS-managed anomaly monitor the account already has
+#   alerts             SNS topic both billing services may publish to + your email subscription
+#   budget-monthly     the limit you chose: 50/80/100% of actual spend + 100% of AWS's forecast
+#   budget-zero-spend  a $0.01 absolute threshold, for the account you believed was idle
+#   anomaly-detection  immediate (SNS) + daily (email) subscriptions on that monitor
+#   allocation         a cost category splitting spend into iac-managed / shared-charges / untagged
+#   export-bucket      lifecycle-managed destination bucket for the export
+#   data-export        CUR 2.0 hourly, resource-level, Parquet
+#
+# Cost: budgets are free within the first two per account, anomaly detection is free, cost categories are
+# free, the export service is free. The only ongoing charge is S3 storage for the export — a few MB a
+# month on a quiet account. Only `up` creates anything; fmt/validate/plan/verify are cost-free.
+#
+# Env (see README / .env.example):
+#   TF_STATE_BUCKET, FINOPS_ALERT_EMAIL, FINOPS_EXPORT_BUCKET      — required for real applies
+#   FINOPS_MONTHLY_BUDGET_USD, FINOPS_ANOMALY_ABSOLUTE_USD,
+#   FINOPS_ANOMALY_PERCENTAGE, FINOPS_COST_ALLOCATION_TAG_KEYS     — optional, have defaults
+
+vars:
+  # Billing and cost management APIs are only reachable here.
+  REGION: us-east-1
+  TOPIC_NAME: finops-baseline-alerts
+  MONTHLY_BUDGET: finops-baseline-monthly
+  ZERO_SPEND_BUDGET: finops-baseline-zero-spend
+  SUBSCRIPTION_IMMEDIATE: finops-baseline-immediate
+  SUBSCRIPTION_DAILY: finops-baseline-daily-summary
+  COST_CATEGORY: finops-baseline-attribution
+  EXPORT_NAME: finops-baseline-cur2-hourly
+
+tasks:
+  default:
+    cmds: [task --list]
+    silent: true
+
+  init-env:
+    desc: Create a local .env from the template (no-op if .env already exists, so it never clobbers your values)
+    cmds:
+      - |
+        if [ -f .env ]; then
+          echo ".env already exists — leaving it untouched."
+        else
+          cp .env.example .env
+          echo "Created .env from .env.example — fill in your values."
+        fi
+
+  fmt:
+    desc: Format Terragrunt HCL
+    cmds:
+      - terragrunt hcl format
+
+  validate:
+    desc: Validate every infra unit (cost-free)
+    dir: infra
+    cmds: [terragrunt run --all validate]
+
+  lint:
+    desc: Lint Terraform/Terragrunt
+    cmds:
+      - tflint --recursive
+
+  plan:
+    desc: Plan all infra units (cost-free)
+    dir: infra
+    cmds: [terragrunt run --all plan]
+
+  state-bootstrap:
+    desc: 'Create the S3 state bucket (run once; needs TF_STATE_BUCKET + admin creds)'
+    dir: infra
+    cmds:
+      - terragrunt backend bootstrap --all --non-interactive
+
+  up:
+    desc: 'Provision the alert topic, budgets, anomaly subscriptions, cost category, export bucket and CUR 2.0 export (creates cloud resources)'
+    dir: infra
+    cmds: [terragrunt run --all apply --non-interactive]
+
+  verify:
+    desc: 'Assert every guardrail exists AND that the alert channel is actually confirmed (cost-free)'
+    cmds:
+      - |
+        set -euo pipefail
+        ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
+        FAIL=0
+
+        pass() { echo "  PASS: $1"; }
+        fail() { echo "  FAIL: $1"; FAIL=1; }
+
+        echo "== budgets =="
+        # Budget notifications are the point, not the budget. Report the thresholds so a budget that
+        # exists but tells nobody is visible as such.
+        for budget in "{{.MONTHLY_BUDGET}}" "{{.ZERO_SPEND_BUDGET}}"; do
+          if aws budgets describe-budget --account-id "$ACCOUNT_ID" --budget-name "$budget" >/dev/null 2>&1; then
+            n="$(aws budgets describe-notifications-for-budget --account-id "$ACCOUNT_ID" \
+                  --budget-name "$budget" --query 'length(Notifications)' --output text)"
+            if [ "$n" -gt 0 ]; then
+              pass "budget '$budget' exists with $n notification threshold(s)."
+            else
+              fail "budget '$budget' exists but has no notifications — it fires into the void."
+            fi
+          else
+            fail "budget '$budget' not found."
+          fi
+        done
+        echo
+
+        echo "== cost anomaly detection =="
+        # Look the monitor up by DIMENSION, not by name: in the normal case it is the one AWS created for
+        # the account and its name is AWS's, not ours (see docs/adr/0004).
+        MONITOR_ARN="$(aws ce get-anomaly-monitors --region {{.REGION}} \
+          --query "AnomalyMonitors[?MonitorType=='DIMENSIONAL' && MonitorDimension=='SERVICE'].MonitorArn | [0]" \
+          --output text)"
+        if [ "$MONITOR_ARN" != "None" ] && [ -n "$MONITOR_ARN" ]; then
+          MONITOR_NAME="$(aws ce get-anomaly-monitors --region {{.REGION}} \
+            --query "AnomalyMonitors[?MonitorArn=='$MONITOR_ARN'].MonitorName | [0]" --output text)"
+          pass "AWS services monitor '$MONITOR_NAME' present."
+
+          # What the lab actually owns is the subscriptions, so assert on those by name.
+          for sub in "{{.SUBSCRIPTION_IMMEDIATE}}" "{{.SUBSCRIPTION_DAILY}}"; do
+            if aws ce get-anomaly-subscriptions --region {{.REGION}} --monitor-arn "$MONITOR_ARN" \
+                 --query "AnomalySubscriptions[?SubscriptionName=='$sub'] | [0].SubscriptionName" \
+                 --output text 2>/dev/null | grep -q "$sub"; then
+              pass "subscription '$sub' attached to that monitor."
+            else
+              fail "subscription '$sub' is not attached to the AWS services monitor."
+            fi
+          done
+
+          aws ce get-anomaly-subscriptions --region {{.REGION}} --monitor-arn "$MONITOR_ARN" \
+            --query 'AnomalySubscriptions[].{name:SubscriptionName,frequency:Frequency}' --output table
+        else
+          fail "no DIMENSIONAL/SERVICE anomaly monitor found — expected AWS to have created one, or the lab to have created it on a fresh account."
+        fi
+        echo
+
+        echo "== cost category =="
+        if aws ce list-cost-category-definitions --region {{.REGION}} \
+             --query "CostCategoryReferences[?Name=='{{.COST_CATEGORY}}'] | [0].Name" --output text | grep -q "{{.COST_CATEGORY}}"; then
+          pass "cost category '{{.COST_CATEGORY}}' exists."
+        else
+          fail "cost category '{{.COST_CATEGORY}}' not found."
+        fi
+
+        ACTIVE_TAGS="$(aws ce list-cost-allocation-tags --region {{.REGION}} --status Active \
+          --query 'length(CostAllocationTags)' --output text 2>/dev/null || echo 0)"
+        echo "  INFO: $ACTIVE_TAGS cost allocation tag key(s) currently active."
+        echo
+
+        echo "== cost and usage export =="
+        if aws bcm-data-exports list-exports --region {{.REGION}} \
+             --query "Exports[?ExportName=='{{.EXPORT_NAME}}'] | [0].ExportName" --output text | grep -q "{{.EXPORT_NAME}}"; then
+          pass "export '{{.EXPORT_NAME}}' exists."
+          if [ -n "${FINOPS_EXPORT_BUCKET:-}" ]; then
+            OBJECTS="$(aws s3 ls "s3://${FINOPS_EXPORT_BUCKET}/cur2/" --recursive 2>/dev/null | wc -l | tr -d ' ')"
+            echo "  INFO: $OBJECTS object(s) delivered so far. Zero is expected for roughly the first 24 hours."
+          fi
+        else
+          fail "export '{{.EXPORT_NAME}}' not found."
+        fi
+        echo
+
+        echo "== alert channel (the part that silently doesn't work) =="
+        # An unconfirmed email subscription is the difference between a lab that looks finished and one
+        # that actually pages you. AWS cannot confirm it for you and neither can Terraform.
+        TOPIC_ARN="arn:aws:sns:{{.REGION}}:${ACCOUNT_ID}:{{.TOPIC_NAME}}"
+        if aws sns get-topic-attributes --region {{.REGION}} --topic-arn "$TOPIC_ARN" >/dev/null 2>&1; then
+          pass "topic '{{.TOPIC_NAME}}' exists."
+
+          # The resource policy must name both publishers or their alerts are denied without any error.
+          POLICY="$(aws sns get-topic-attributes --region {{.REGION}} --topic-arn "$TOPIC_ARN" \
+            --query 'Attributes.Policy' --output text)"
+          for principal in budgets.amazonaws.com costalerts.amazonaws.com; do
+            if echo "$POLICY" | grep -q "$principal"; then
+              pass "topic policy allows $principal to publish."
+            else
+              fail "topic policy does NOT allow $principal — its alerts would be denied silently."
+            fi
+          done
+
+          PENDING="$(aws sns list-subscriptions-by-topic --region {{.REGION}} --topic-arn "$TOPIC_ARN" \
+            --query "length(Subscriptions[?SubscriptionArn=='PendingConfirmation'])" --output text)"
+          CONFIRMED="$(aws sns list-subscriptions-by-topic --region {{.REGION}} --topic-arn "$TOPIC_ARN" \
+            --query "length(Subscriptions[?SubscriptionArn!='PendingConfirmation'])" --output text)"
+          if [ "$CONFIRMED" -gt 0 ]; then
+            pass "$CONFIRMED confirmed subscriber(s) on the topic."
+          else
+            fail "no confirmed subscribers: $PENDING pending. Click the link in the AWS confirmation email — until then every alert in this lab goes nowhere."
+          fi
+        else
+          fail "topic '{{.TOPIC_NAME}}' not found."
+        fi
+        echo
+
+        echo "== summary =="
+        if [ "$FAIL" -eq 0 ]; then
+          echo "PASS: the guardrails are in place and the alert channel is live."
+        else
+          echo "FAIL: at least one guardrail is missing or mute (see above)."
+          exit 1
+        fi
+
+  test-alert:
+    desc: 'Publish a test message to the alert topic — proves the delivery path end to end without waiting for real spend'
+    cmds:
+      - |
+        set -euo pipefail
+        ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
+        aws sns publish --region {{.REGION}} \
+          --topic-arn "arn:aws:sns:{{.REGION}}:${ACCOUNT_ID}:{{.TOPIC_NAME}}" \
+          --subject "FinOps guardrails test" \
+          --message "Test from the finops-guardrails-baseline lab. If you are reading this, budget and anomaly alerts will reach you too." \
+          --output text >/dev/null
+        echo "Published. If nothing arrives, the subscription is unconfirmed — run 'task verify'."
+
+  show-spend:
+    desc: 'Month-to-date spend by service, and by the cost category this lab defines (cost-free; Cost Explorer API charges $0.01 per request)'
+    cmds:
+      - |
+        set -euo pipefail
+        START="$(date -u +%Y-%m-01)"
+        END="$(date -u +%Y-%m-%d)"
+        # Cost Explorer rejects an empty range, which is what you get on the 1st of the month.
+        if [ "$START" = "$END" ]; then
+          START="$(date -u -v-1m +%Y-%m-01 2>/dev/null || date -u -d 'last month' +%Y-%m-01)"
+        fi
+
+        echo "== unblended cost by service, $START to $END =="
+        aws ce get-cost-and-usage --region {{.REGION}} \
+          --time-period "Start=$START,End=$END" \
+          --granularity MONTHLY --metrics UnblendedCost \
+          --group-by Type=DIMENSION,Key=SERVICE \
+          --query 'ResultsByTime[0].Groups[].{service:Keys[0],cost:Metrics.UnblendedCost.Amount}' \
+          --output table
+
+        echo "== the same spend, grouped by the '{{.COST_CATEGORY}}' cost category =="
+        echo "(a category takes up to 24h to apply, and only categorises spend from its effective month on)"
+        aws ce get-cost-and-usage --region {{.REGION}} \
+          --time-period "Start=$START,End=$END" \
+          --granularity MONTHLY --metrics UnblendedCost \
+          --group-by "Type=COST_CATEGORY,Key={{.COST_CATEGORY}}" \
+          --query 'ResultsByTime[0].Groups[].{bucket:Keys[0],cost:Metrics.UnblendedCost.Amount}' \
+          --output table || echo "  (no categorised data yet)"
+
+  down:
+    desc: Destroy all infra
+    dir: infra
+    cmds: [terragrunt run --all destroy --non-interactive]
