@@ -1,0 +1,18 @@
+# Records the exact window a migration was asked to move, written by `task migrate` and read by
+# `task verify`. It describes one run of a throwaway lab, so it is local state, not source.
+.migration-window
+
+# Short-lived AWS session credentials, used only when driving a real migration over port-forward from a
+# workstation. Never committed, and deleted as soon as the operation finishes.
+.aws-creds.env
+
+# Parameters for a real migration run (endpoints, filter, window). Local operational state describing one
+# operator's run, not source.
+.pilot.env
+
+# Logs from real migration runs. Kept locally as an operational record — they name production namespaces,
+# pod names and time windows, so they are not committed to a public lab repo.
+.migration*.log
+
+# A locally built migrator binary, if one is produced for a run outside the cluster.
+.migrator-bin

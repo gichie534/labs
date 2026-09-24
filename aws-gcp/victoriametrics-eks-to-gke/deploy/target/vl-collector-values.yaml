@@ -1,0 +1,25 @@
+# TARGET log collector (GKE Autopilot): the target tails its own container logs from day one, so it
+# holds native logs of its own alongside whatever the migration brings over — the production shape this
+# lab imitates.
+#
+# The volume overrides are an Autopilot constraint, not a preference. Autopilot permits only READ-ONLY
+# hostPath mounts under /var/log/, while the chart otherwise wants a writable /var/lib hostPath for its
+# temp data plus a /var/lib read mount for Minikube. So: temp data moves to an emptyDir, and the only
+# host mount kept is the read-only /var/log (where GKE container logs live — /var/log/pods, symlinked
+# from /var/log/containers).
+remoteWrite:
+  - url: http://vl-victoria-logs-single-server.observability.svc:9428
+
+persistence:
+  volume:
+    emptyDir: {}
+
+defaultVolumes:
+  - name: varlog
+    hostPath:
+      path: /var/log
+
+defaultVolumeMounts:
+  - name: varlog
+    mountPath: /var/log
+    readOnly: true

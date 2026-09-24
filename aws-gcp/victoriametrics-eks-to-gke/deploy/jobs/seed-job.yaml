@@ -1,0 +1,78 @@
+# Seeds the SOURCE cluster with the deterministic, backdated dataset.
+#
+# Runs on the SOURCE (EKS) and writes only to its own in-cluster services, so it never touches the VPN —
+# a useful property: if seeding works but migration does not, the fault is connectivity, not data.
+#
+# HOW THE GO CODE GETS HERE: deploy/migrator/ is mounted from a ConfigMap and run with `go run`, so this
+# lab needs no container registry in either cloud and no build-and-push step. The Go environment is
+# pointed at an emptyDir because the source mount is read-only and the toolchain needs somewhere to put
+# its build cache. See deploy/migrator/main.go for the full reasoning.
+#
+# The `__SEED_DAYS__` placeholder is substituted by `task seed`.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: seed
+  namespace: observability
+  labels:
+    lab.role: seed
+spec:
+  backoffLimit: 2
+  # Kept for a while after completion so `kubectl logs job/seed` still works when you come back to it.
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels:
+        lab.role: seed
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: seed
+          image: golang:1.24-alpine
+          workingDir: /app
+          command: ["go", "run", ".", "seed"]
+          env:
+            # The endpoint Services this lab names itself, rather than the ones the VictoriaMetrics
+            # operator derives from the custom resource name.
+            - name: VM_WRITE_URL
+              value: "http://vmsingle-endpoint.observability.svc:8428"
+            - name: VL_WRITE_URL
+              value: "http://vl-private-lb.observability.svc:9428"
+            - name: SEED_DAYS
+              value: "__SEED_DAYS__"
+            # --- Go toolchain state, all under the writable emptyDir ---
+            - name: HOME
+              value: /tmp
+            - name: GOCACHE
+              value: /tmp/go-build
+            - name: GOMODCACHE
+              value: /tmp/gomodcache
+            - name: GOPATH
+              value: /tmp/gopath
+            # No VCS metadata in a ConfigMap mount, and the build would otherwise complain about it.
+            - name: GOFLAGS
+              value: -buildvcs=false
+            # Pure Go, no cgo — so the alpine image needs no C toolchain, and DNS uses Go's own
+            # resolver, which reads the cluster's /etc/resolv.conf as intended.
+            - name: CGO_ENABLED
+              value: "0"
+          volumeMounts:
+            - name: src
+              mountPath: /app
+              readOnly: true
+            - name: gocache
+              mountPath: /tmp
+          resources:
+            # Sized for the compile rather than the work: `go run` builds before it runs.
+            requests:
+              cpu: 1000m
+              memory: 1Gi
+            limits:
+              cpu: 1000m
+              memory: 1Gi
+      volumes:
+        - name: src
+          configMap:
+            name: migrator-src
+        - name: gocache
+          emptyDir: {}

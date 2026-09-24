@@ -1,0 +1,76 @@
+# Migrates LOGS from the source VictoriaLogs into the target, over the cross-cloud VPN.
+#
+# Code rather than a tool, because no tool does this yet: vmctl has no VictoriaLogs mode, vlogscli can only
+# read, and VictoriaMetrics' roadmap still lists log migration tooling as unshipped. See
+# deploy/migrator/migratelogs.go for the export/import contract, how log streams are reconstructed, and why
+# this half is not safely repeatable while the metric half is.
+#
+# Placeholders substituted by `task migrate`: __SOURCE_VL_HOST__, __MIGRATE_START__, __MIGRATE_END__.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: migrate-logs
+  namespace: observability
+  labels:
+    lab.role: migrate
+spec:
+  backoffLimit: 2
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels:
+        lab.role: migrate
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: migrate-logs
+          image: golang:1.24-alpine
+          workingDir: /app
+          command: ["go", "run", ".", "migrate-logs"]
+          env:
+            # Across the VPN: an AWS internal load balancer hostname, resolving to a private address.
+            - name: SOURCE_VL_URL
+              value: "http://__SOURCE_VL_HOST__:9428"
+            - name: TARGET_VL_URL
+              value: "http://vl-victoria-logs-single-server.observability.svc:9428"
+            - name: MIGRATE_START
+              value: "__MIGRATE_START__"
+            - name: MIGRATE_END
+              value: "__MIGRATE_END__"
+            # The already-migrated guard, set explicitly because it is opt-in. VictoriaLogs cannot
+            # deduplicate or delete by query, so without this a second `task migrate` would leave a
+            # permanent second copy of every line.
+            - name: MIGRATE_GUARD_QUERY
+              value: "dataset:seed"
+            # --- Go toolchain state, all under the writable emptyDir ---
+            - name: HOME
+              value: /tmp
+            - name: GOCACHE
+              value: /tmp/go-build
+            - name: GOMODCACHE
+              value: /tmp/gomodcache
+            - name: GOPATH
+              value: /tmp/gopath
+            - name: GOFLAGS
+              value: -buildvcs=false
+            - name: CGO_ENABLED
+              value: "0"
+          volumeMounts:
+            - name: src
+              mountPath: /app
+              readOnly: true
+            - name: gocache
+              mountPath: /tmp
+          resources:
+            requests:
+              cpu: 1000m
+              memory: 1Gi
+            limits:
+              cpu: 1000m
+              memory: 1Gi
+      volumes:
+        - name: src
+          configMap:
+            name: migrator-src
+        - name: gocache
+          emptyDir: {}

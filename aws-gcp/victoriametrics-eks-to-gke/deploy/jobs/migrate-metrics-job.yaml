@@ -1,0 +1,67 @@
+# Migrates METRICS from the source VictoriaMetrics into the target, using vmctl's native mode.
+#
+# THIS IS THE JOB THE LAB IS ABOUT: it runs in the TARGET (GKE) cluster and pulls from the SOURCE across
+# the cross-cloud VPN, over private addressing only. The source address is an AWS INTERNAL load balancer
+# hostname — it resolves through public DNS to a private address, which is then routed over the VPN, so
+# no private DNS zone is needed and no public endpoint is ever involved.
+#
+# No script here: vmctl is the whole implementation. The log half needs a script only because vmctl has
+# no VictoriaLogs mode (see deploy/migrator/migratelogs.go).
+#
+# Placeholders substituted by `task migrate`: __SOURCE_VM_HOST__, __MIGRATE_START__, __MIGRATE_END__.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: migrate-metrics
+  namespace: observability
+  labels:
+    lab.role: migrate
+spec:
+  backoffLimit: 2
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels:
+        lab.role: migrate
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: vmctl
+          image: victoriametrics/vmctl:v1.152.0
+          args:
+            - vm-native
+            - --vm-native-src-addr=http://__SOURCE_VM_HOST__:8428
+            - --vm-native-dst-addr=http://vmsingle-endpoint.observability.svc:8428
+
+            # Everything EXCEPT VictoriaMetrics' own process metrics. Those exist natively on both
+            # sides, so migrating them would interleave two clusters' self-monitoring into one set of
+            # series and make the official VM dashboards read nonsense. The seed dataset and all
+            # scraped application/cluster metrics are included.
+            - --vm-native-filter-match={__name__!~"vm_.*"}
+
+            # A bounded, explicit window. The end is the migration CUTOFF, which is also what
+            # verification compares against — so "what was supposed to move" is one value, recorded
+            # once, rather than an assumption made twice.
+            - --vm-native-filter-time-start=__MIGRATE_START__
+            - --vm-native-filter-time-end=__MIGRATE_END__
+
+            # One export request per day instead of one for the whole window. Keeps each request inside
+            # the source's export deadline and makes progress visible in the Job log.
+            - --vm-native-step-interval=day
+
+            # Non-interactive: without -s, vmctl waits at a "Continue? [Y/n]" prompt that no one will
+            # ever answer, and the Job hangs until its deadline rather than failing.
+            - -s
+            - --disable-progress-bar
+
+            # vmctl publishes its own progress into the target while it runs, which is what the
+            # dashboard's progress panel draws. A long migration becomes observable instead of opaque.
+            - --pushmetrics.url=http://vmsingle-endpoint.observability.svc:8428/api/v1/import/prometheus
+            - --pushmetrics.extraLabel=job="vmctl"
+          resources:
+            requests:
+              cpu: 500m
+              memory: 512Mi
+            limits:
+              cpu: 1000m
+              memory: 1Gi

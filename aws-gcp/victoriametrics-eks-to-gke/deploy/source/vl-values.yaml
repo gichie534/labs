@@ -1,0 +1,17 @@
+# SOURCE VictoriaLogs (EKS) — the log database we migrate AWAY from.
+#
+# Release name is pinned to `vl` by the Taskfile, so the chart's Service is
+# `vl-victoria-logs-single-server:9428`. Logs are shipped by the separate victoria-logs-collector
+# release, so the chart's bundled Vector is off.
+vector:
+  enabled: false
+
+server:
+  # MUST exceed SEED_DAYS: VictoriaLogs drops log entries whose _time falls outside retention at
+  # INGEST time, so a short retention would silently swallow the backdated seed dataset.
+  retentionPeriod: "30d"
+
+  extraArgs:
+    # The migration reads a day of logs per request. The default query deadline is sized for
+    # interactive use, not for streaming a day of logs into a pipe.
+    search.maxQueryDuration: 30m

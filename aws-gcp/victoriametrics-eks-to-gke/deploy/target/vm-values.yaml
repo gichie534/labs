@@ -1,0 +1,136 @@
+# TARGET VictoriaMetrics stack (GKE Autopilot) — the database we migrate INTO, plus the Grafana that
+# renders the before/after comparison.
+#
+# This target is NOT an empty vessel. vmagent is on, so it collects its own metrics from the moment it
+# exists, exactly like the production cluster this lab imitates. That single choice is what forces the
+# migration to be an API-level MERGE rather than a filesystem restore (which replaces a data directory
+# wholesale and would destroy the target's own data). See docs/adr/0002.
+fullnameOverride: vmstack
+
+defaultRules:
+  create: false
+alertmanager:
+  enabled: false
+vmalert:
+  enabled: false
+
+# The target monitors itself from day one — the production situation being imitated.
+vmagent:
+  enabled: true
+  spec:
+    # The counterpart of the source's label. After migration this database holds series labelled
+    # cluster="vmmig-source" (carried over) next to cluster="vmmig-target" (its own), which is what
+    # makes "what did we migrate?" answerable at all rather than a guess.
+    externalLabels:
+      cluster: vmmig-target
+
+vmsingle:
+  enabled: true
+  spec:
+    retentionPeriod: "30d"
+
+    extraArgs:
+      # THE flag that makes metric migration idempotent. vmctl re-importing a sample that is already
+      # present writes an identical timestamp/value pair; with deduplication on, that collapses to one
+      # sample instead of two. Without it, a re-run of `task migrate` would double every migrated
+      # sample and the verification diff would fail for a reason that looks like data corruption.
+      dedup.minScrapeInterval: 1ms
+      # Verification exports the full history of the seed dataset from both sides in one pass.
+      search.maxExportDuration: 30m
+      search.maxExportSeries: "1000000"
+
+    # An additional Service with a name THIS LAB owns, mirroring the source's `vmsingle-endpoint`.
+    # The operator's own Service is named after the custom resource (`vmsingle-vmstack`), and having
+    # every script and Job hardcode an operator naming convention is a dependency worth avoiding —
+    # especially when the same scripts have to address both clusters. ClusterIP here; the source's
+    # equivalent is an internal load balancer, and that difference is the only asymmetry.
+    serviceSpec:
+      metadata:
+        name: vmsingle-endpoint
+      spec:
+        type: ClusterIP
+        ports:
+          - name: http
+            port: 8428
+            targetPort: 8428
+
+kube-state-metrics:
+  enabled: true
+
+# GKE Autopilot blocks the host mounts the node exporter needs. vmagent still scrapes the
+# kubelet/cAdvisor and kube-state-metrics, so the target is genuinely monitored without it.
+prometheus-node-exporter:
+  enabled: false
+
+# GKE has a managed control plane: these components aren't reachable, and the chart would try to
+# create their scrape Services in the managed kube-system namespace, which Autopilot forbids.
+kubeControllerManager:
+  enabled: false
+kubeScheduler:
+  enabled: false
+kubeEtcd:
+  enabled: false
+kubeProxy:
+  enabled: false
+coreDns:
+  enabled: false
+kubeDns:
+  enabled: false
+
+# Datasource UIDs are pinned so the provisioned dashboard can reference them. A dashboard that
+# references datasources by NAME breaks the moment a name is edited; by UID it does not.
+defaultDatasources:
+  victoriametrics:
+    datasources:
+      # The chart fills in the URL of the vmsingle it just created.
+      - name: VictoriaMetrics (target)
+        type: prometheus
+        access: proxy
+        uid: vm-target
+        isDefault: true
+  # Emptied because VictoriaLogs and Alertmanager are not part of this release: left at their defaults
+  # the chart would provision datasources with no URL, which look configured and silently return
+  # nothing.
+  victorialogs:
+    datasources: []
+  victoriatraces:
+    datasources: []
+  alertmanager:
+    datasources: []
+  extra:
+    - name: VictoriaLogs (target)
+      type: victoriametrics-logs-datasource
+      access: proxy
+      uid: vl-target
+      url: http://vl-victoria-logs-single-server.observability.svc:9428
+
+# The SOURCE datasources are NOT here: their URLs are the AWS internal load balancer hostnames, which
+# only exist once the source is deployed. `task deploy-target` renders
+# deploy/target/source-datasources.yaml into a sidecar-discovered ConfigMap instead, keeping every
+# value in this file static and readable.
+grafana:
+  enabled: true
+  fullnameOverride: grafana
+
+  service:
+    type: ClusterIP
+
+  # Needed to read VictoriaLogs at all, and to use MetricsQL against VictoriaMetrics. Grafana pulls
+  # these from the internet on startup (via Cloud NAT).
+  plugins:
+    - victoriametrics-metrics-datasource
+    - victoriametrics-logs-datasource
+
+  # The stack's bundled Kubernetes dashboards are noise here; this lab ships exactly one dashboard,
+  # about the migration.
+  defaultDashboardsEnabled: false
+
+  # requests == limits keeps Autopilot from mutating the pod, which would otherwise leave it in a
+  # permanent "pending resource adjustment" shuffle.
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      cpu: 250m
+      memory: 512Mi

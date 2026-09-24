@@ -1,0 +1,106 @@
+# Live data generators on the SOURCE cluster.
+#
+# These exist so the source is not a museum piece: on top of the deterministic seed dataset it carries
+# real, continuously-arriving metrics and logs. That is what makes the migration honest — it has to
+# move a database that is still being written to, which is also why verification pins the live half of
+# the comparison to the migration cutoff instead of comparing "everything" twice.
+#
+# avalanche  -> a synthetic /metrics endpoint for vmagent to scrape
+# flog       -> synthetic JSON access logs on stdout for the log collector to tail
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: generators
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: avalanche
+  namespace: generators
+  labels:
+    app: avalanche
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: avalanche
+  template:
+    metadata:
+      labels:
+        app: avalanche
+    spec:
+      containers:
+        - name: avalanche
+          image: quay.io/prometheuscommunity/avalanche:v0.7.0
+          args: ["--port=9001"]
+          ports:
+            - name: metrics
+              containerPort: 9001
+          resources:
+            requests:
+              cpu: 100m
+              # avalanche's default series set needs real memory; 128Mi gets it OOMKilled.
+              memory: 512Mi
+            limits:
+              cpu: 200m
+              memory: 512Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: avalanche
+  namespace: generators
+  labels:
+    app: avalanche
+spec:
+  selector:
+    app: avalanche
+  ports:
+    - name: metrics
+      port: 9001
+      targetPort: metrics
+---
+# Tells vmagent (via the VictoriaMetrics operator) to scrape avalanche.
+apiVersion: operator.victoriametrics.com/v1beta1
+kind: VMServiceScrape
+metadata:
+  name: avalanche
+  namespace: generators
+spec:
+  selector:
+    matchLabels:
+      app: avalanche
+  endpoints:
+    - port: metrics
+      interval: 30s
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: flog
+  namespace: generators
+  labels:
+    app: flog
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: flog
+  template:
+    metadata:
+      labels:
+        app: flog
+    spec:
+      containers:
+        - name: flog
+          image: mingrammer/flog:0.4.3
+          # One JSON access-log line per second, forever.
+          args: ["-f", "json", "-d", "1s", "-l"]
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 100m
+              memory: 128Mi

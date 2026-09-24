@@ -1,0 +1,112 @@
+# The EKS side of the test: an echo server reachable only on a private address.
+#
+# The Go source is delivered separately, as the `echo-src` ConfigMap built by `task deploy` from
+# deploy/echo/ — so there is no image to build and no registry to authenticate against.
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: vpn-test
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: echo-server
+  namespace: vpn-test
+  labels:
+    app: echo-server
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: echo-server
+  template:
+    metadata:
+      labels:
+        app: echo-server
+    spec:
+      containers:
+        - name: echo
+          image: golang:1.24-alpine
+          workingDir: /app
+          command: ["go", "run", "."]
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            - name: NODE_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.hostIP
+            # Go toolchain state, all under the writable emptyDir (the source mount is read-only).
+            - name: HOME
+              value: /tmp
+            - name: GOCACHE
+              value: /tmp/go-build
+            - name: GOMODCACHE
+              value: /tmp/gomodcache
+            - name: GOPATH
+              value: /tmp/gopath
+            - name: GOFLAGS
+              value: -buildvcs=false
+            - name: CGO_ENABLED
+              value: "0"
+          readinessProbe:
+            httpGet:
+              path: /
+              port: http
+            # `go run` compiles first, so readiness is deliberately patient.
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            failureThreshold: 30
+          volumeMounts:
+            - name: src
+              mountPath: /app
+              readOnly: true
+            - name: gocache
+              mountPath: /tmp
+          resources:
+            requests:
+              cpu: 500m
+              memory: 512Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+      volumes:
+        - name: src
+          configMap:
+            name: echo-src
+        - name: gocache
+          emptyDir: {}
+---
+# INTERNAL load balancer: a stable private address, with no public listener anywhere.
+apiVersion: v1
+kind: Service
+metadata:
+  name: echo-private-lb
+  namespace: vpn-test
+  annotations:
+    service.beta.kubernetes.io/aws-load-balancer-internal: "true"
+    service.beta.kubernetes.io/aws-load-balancer-scheme: internal
+spec:
+  type: LoadBalancer
+  # Only the GKE node and Pod ranges may connect. The Pod range must be here: without it the requests
+  # arrive from an address this list does not cover and are dropped by the load balancer's security
+  # group — which looks exactly like a broken VPN.
+  loadBalancerSourceRanges:
+    - 10.30.0.0/20
+    - 10.31.0.0/16
+  selector:
+    app: echo-server
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http

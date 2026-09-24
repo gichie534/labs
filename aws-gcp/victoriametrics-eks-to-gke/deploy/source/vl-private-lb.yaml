@@ -1,0 +1,37 @@
+# The only way into the SOURCE VictoriaLogs from outside the cluster: an INTERNAL load balancer with
+# no public address, reachable exclusively over the cross-cloud VPN.
+#
+# VictoriaMetrics got its equivalent service through the VMSingle CR's `serviceSpec`, which lets the
+# operator own the selector. victoria-logs-single is a plain Helm chart with no operator, so the
+# selector is written out here. These three labels are exactly what the chart puts on its own Service
+# (`helm template vm/victoria-logs-single`), and `app.kubernetes.io/instance` is the release name,
+# which the Taskfile pins to `vl` — so the coupling is to a value this lab controls, not to a chart
+# internal that could drift.
+apiVersion: v1
+kind: Service
+metadata:
+  name: vl-private-lb
+  namespace: observability
+  labels:
+    app.kubernetes.io/name: victoria-logs-single
+    lab.role: migration-source-endpoint
+  annotations:
+    service.beta.kubernetes.io/aws-load-balancer-internal: "true"
+    service.beta.kubernetes.io/aws-load-balancer-scheme: internal
+spec:
+  type: LoadBalancer
+  # Defence in depth behind the private-only address: only the GKE node and Pod ranges may connect.
+  # The Pod range is required because GKE does not masquerade Pod traffic to RFC 1918 destinations,
+  # so packets from the migration Job arrive with a Pod source address.
+  loadBalancerSourceRanges:
+    - 10.30.0.0/20
+    - 10.31.0.0/16
+  selector:
+    app: server
+    app.kubernetes.io/instance: vl
+    app.kubernetes.io/name: victoria-logs-single
+  ports:
+    - name: http
+      port: 9428
+      targetPort: http
+      protocol: TCP

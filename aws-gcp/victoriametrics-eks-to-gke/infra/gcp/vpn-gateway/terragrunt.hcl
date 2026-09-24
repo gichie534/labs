@@ -1,0 +1,39 @@
+# PHASE 1 of the cross-cloud VPN: the Cloud HA VPN gateway.
+#
+# This unit exists on its own because the peering cannot be built in one pass — AWS needs the two
+# addresses Google assigns to this gateway's interfaces before it can create its customer gateways,
+# and only then does AWS reveal the tunnel addresses and pre-shared keys that phase 3 needs:
+#
+#   gcp/vpn-gateway  ->  aws/vpn  ->  gcp/vpn-tunnels
+#
+# The gateway itself is free; the tunnels created in phase 3 are what get billed.
+
+include "root" {
+  path   = find_in_parent_folders("root.hcl")
+  expose = true
+}
+
+terraform {
+  source = "git::https://github.com/gichie534/infrastructure-catalog.git//modules/gcp/ha-vpn-gateway?ref=gcp-ha-vpn-gateway-v0.1.0"
+}
+
+locals {
+  project_id = include.root.locals.project_id
+  region     = include.root.locals.region
+}
+
+dependency "network" {
+  config_path = "../network"
+
+  mock_outputs = {
+    network_self_link = "projects/mock/global/networks/mock"
+  }
+  mock_outputs_allowed_terraform_commands = ["validate", "plan", "apply", "destroy"]
+}
+
+inputs = {
+  name       = "${include.root.locals.lab}-havpn"
+  project_id = local.project_id
+  region     = local.region
+  network    = dependency.network.outputs.network_self_link
+}

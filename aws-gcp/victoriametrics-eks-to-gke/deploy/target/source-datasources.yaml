@@ -1,0 +1,39 @@
+# Grafana datasources pointing at the SOURCE cluster's VictoriaMetrics and VictoriaLogs, ACROSS THE
+# VPN. These are what make the comparison dashboard possible: one Grafana, four datasources, both sides
+# of the migration side by side.
+#
+# This file is a TEMPLATE. `task deploy-target` substitutes the two placeholders with the AWS internal
+# load balancer hostnames and applies the result — they are private DNS names that only exist once the
+# source is deployed, which is why they are not baked into the Helm values.
+#
+# Worth knowing: an AWS internal load balancer's hostname resolves through PUBLIC DNS to a PRIVATE
+# address. So Grafana resolves it with the ordinary cluster resolver and then routes to it over the
+# VPN — no private DNS zone, no /etc/hosts entry, no service mesh.
+#
+# The sidecar in the Grafana chart discovers this ConfigMap by its label (grafana_datasource: "1") and
+# drops it into Grafana's provisioning directory.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-source-datasources
+  namespace: observability
+  labels:
+    grafana_datasource: "1"
+data:
+  source-datasources.yaml: |
+    apiVersion: 1
+    datasources:
+      - name: VictoriaMetrics (source, over VPN)
+        type: prometheus
+        access: proxy
+        uid: vm-source
+        url: http://__SOURCE_VM_HOST__:8428
+        isDefault: false
+        jsonData:
+          timeInterval: 30s
+      - name: VictoriaLogs (source, over VPN)
+        type: victoriametrics-logs-datasource
+        access: proxy
+        uid: vl-source
+        url: http://__SOURCE_VL_HOST__:9428
+        isDefault: false

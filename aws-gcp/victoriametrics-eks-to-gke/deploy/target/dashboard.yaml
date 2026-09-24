@@ -1,0 +1,272 @@
+# The migration dashboard, delivered as a sidecar-discovered ConfigMap (label grafana_dashboard: "1").
+#
+# Design note worth reading before editing: almost every panel here is plain PromQL against the TARGET
+# VictoriaMetrics, even the panels that describe the SOURCE. That is deliberate. `task verify` does the
+# real comparison in Go — an exact, per-timestamp, per-value diff — and then PUSHES its findings as
+# metrics. So the dashboard never has to reimplement the comparison in dashboard queries, where it
+# would be hard to read and easy to get subtly wrong.
+#
+# The two side-by-side timeseries panels are the exception: they query the source and target directly,
+# because seeing the same series rendered from both databases is the point.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboard-migration
+  namespace: observability
+  labels:
+    grafana_dashboard: "1"
+data:
+  victoria-migration.json: |
+    {
+      "title": "VictoriaMetrics/VictoriaLogs migration: EKS -> GKE",
+      "uid": "vm-vl-migration",
+      "tags": ["migration", "victoriametrics", "victorialogs"],
+      "timezone": "utc",
+      "editable": true,
+      "schemaVersion": 39,
+      "refresh": "30s",
+      "time": { "from": "now-8d", "to": "now" },
+      "templating": { "list": [] },
+      "panels": [
+        {
+          "type": "row",
+          "title": "Verdict",
+          "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
+          "collapsed": false,
+          "panels": []
+        },
+        {
+          "type": "stat",
+          "title": "Migration verified",
+          "description": "Pushed by `task verify`. 1 only when the seed dataset matches EXACTLY on both sides — every timestamp and every value for metrics, every log line for logs. No data at all means verify has not run yet.",
+          "datasource": { "type": "prometheus", "uid": "vm-target" },
+          "gridPos": { "h": 5, "w": 6, "x": 0, "y": 1 },
+          "targets": [
+            { "refId": "A", "expr": "migration_verify_ok", "instant": true, "legendFormat": "verified" }
+          ],
+          "options": {
+            "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+            "colorMode": "background",
+            "graphMode": "none",
+            "textMode": "value_and_name"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "mappings": [
+                { "type": "value", "options": { "1": { "text": "VERIFIED", "color": "green", "index": 0 } } },
+                { "type": "value", "options": { "0": { "text": "MISMATCH", "color": "red", "index": 1 } } },
+                { "type": "special", "options": { "match": "null", "result": { "text": "NOT RUN", "color": "text", "index": 2 } } }
+              ],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  { "color": "red", "value": null },
+                  { "color": "green", "value": 1 }
+                ]
+              }
+            },
+            "overrides": []
+          }
+        },
+        {
+          "type": "stat",
+          "title": "Seed metric samples: source vs target",
+          "description": "Exact sample counts over the FULL history of the seed dataset. These two must be identical.",
+          "datasource": { "type": "prometheus", "uid": "vm-target" },
+          "gridPos": { "h": 5, "w": 6, "x": 6, "y": 1 },
+          "targets": [
+            { "refId": "A", "expr": "migration_verify_samples", "instant": true, "legendFormat": "{{side}}" }
+          ],
+          "options": {
+            "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+            "colorMode": "value",
+            "graphMode": "none",
+            "textMode": "value_and_name"
+          },
+          "fieldConfig": {
+            "defaults": { "unit": "short", "color": { "mode": "fixed", "fixedColor": "blue" } },
+            "overrides": []
+          }
+        },
+        {
+          "type": "stat",
+          "title": "Sample diff (must be 0)",
+          "description": "Number of (series, timestamp, value) tuples present on exactly one side. Zero means every sample arrived with its original timestamp and value.",
+          "datasource": { "type": "prometheus", "uid": "vm-target" },
+          "gridPos": { "h": 5, "w": 6, "x": 12, "y": 1 },
+          "targets": [
+            { "refId": "A", "expr": "migration_verify_sample_diff", "instant": true, "legendFormat": "differing samples" }
+          ],
+          "options": {
+            "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+            "colorMode": "background",
+            "graphMode": "none",
+            "textMode": "value_and_name"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  { "color": "green", "value": null },
+                  { "color": "red", "value": 1 }
+                ]
+              }
+            },
+            "overrides": []
+          }
+        },
+        {
+          "type": "stat",
+          "title": "Seed log lines + diff (must be 0)",
+          "description": "Log lines of the seed dataset per side, and how many are missing or duplicated on the target.",
+          "datasource": { "type": "prometheus", "uid": "vm-target" },
+          "gridPos": { "h": 5, "w": 6, "x": 18, "y": 1 },
+          "targets": [
+            { "refId": "A", "expr": "migration_verify_log_lines", "instant": true, "legendFormat": "{{side}}" },
+            { "refId": "B", "expr": "migration_verify_log_diff", "instant": true, "legendFormat": "diff" }
+          ],
+          "options": {
+            "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+            "colorMode": "value",
+            "graphMode": "none",
+            "textMode": "value_and_name"
+          },
+          "fieldConfig": {
+            "defaults": { "unit": "short" },
+            "overrides": [
+              {
+                "matcher": { "id": "byName", "options": "diff" },
+                "properties": [
+                  {
+                    "id": "thresholds",
+                    "value": {
+                      "mode": "absolute",
+                      "steps": [
+                        { "color": "green", "value": null },
+                        { "color": "red", "value": 1 }
+                      ]
+                    }
+                  },
+                  { "id": "custom.displayMode", "value": "color-background" }
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "type": "row",
+          "title": "The proof: the target holds data from before the target existed",
+          "gridPos": { "h": 1, "w": 24, "x": 0, "y": 6 },
+          "collapsed": false,
+          "panels": []
+        },
+        {
+          "type": "text",
+          "title": "How to read the two panels below",
+          "gridPos": { "h": 6, "w": 6, "x": 0, "y": 7 },
+          "options": {
+            "mode": "markdown",
+            "content": "These two panels run the **same query** against the **two different databases**.\n\n**Left:** the source, on EKS — where the data was written.\n\n**Right:** the target, on GKE — where it was migrated to.\n\nThe thing to look for is the **left-hand edge**. The seed dataset is backdated ~7 days, and the GKE cluster is minutes or hours old. So any line extending to the left of the target cluster's own birth is data that could only be there because the migration carried it across **with its original timestamps**.\n\nIf the migration had re-stamped the data with \"now\", the right-hand panel would show a single narrow spike instead of a week of history.\n\nThe numbers above are the rigorous version of the same claim: `task verify` diffs every sample, not just the shape of the curve."
+          }
+        },
+        {
+          "type": "timeseries",
+          "title": "SOURCE (EKS) — seed metrics, read over the VPN",
+          "datasource": { "type": "prometheus", "uid": "vm-source" },
+          "gridPos": { "h": 6, "w": 9, "x": 6, "y": 7 },
+          "targets": [
+            { "refId": "A", "expr": "lab_migration_sample{dataset=\"seed\"}", "legendFormat": "{{series}}" }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 0, "showPoints": "never" }
+            },
+            "overrides": []
+          },
+          "options": { "legend": { "showLegend": false }, "tooltip": { "mode": "multi" } }
+        },
+        {
+          "type": "timeseries",
+          "title": "TARGET (GKE) — the same series, after migration",
+          "datasource": { "type": "prometheus", "uid": "vm-target" },
+          "gridPos": { "h": 6, "w": 9, "x": 15, "y": 7 },
+          "targets": [
+            { "refId": "A", "expr": "lab_migration_sample{dataset=\"seed\"}", "legendFormat": "{{series}}" }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 0, "showPoints": "never" }
+            },
+            "overrides": []
+          },
+          "options": { "legend": { "showLegend": false }, "tooltip": { "mode": "multi" } }
+        },
+        {
+          "type": "stat",
+          "title": "Oldest seed sample held by each side",
+          "description": "The migrated history reaches back this far. The target's value being far older than the target CLUSTER is the whole point.",
+          "datasource": { "type": "prometheus", "uid": "vm-target" },
+          "gridPos": { "h": 4, "w": 12, "x": 0, "y": 13 },
+          "targets": [
+            { "refId": "A", "expr": "migration_verify_oldest_sample_timestamp * 1000", "instant": true, "legendFormat": "{{side}}" }
+          ],
+          "options": {
+            "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+            "colorMode": "none",
+            "graphMode": "none",
+            "textMode": "value_and_name"
+          },
+          "fieldConfig": {
+            "defaults": { "unit": "dateTimeAsIso" },
+            "overrides": []
+          }
+        },
+        {
+          "type": "timeseries",
+          "title": "Migration progress (pushed live by vmctl)",
+          "description": "vmctl pushes its own progress metrics into the target while it runs, so a long migration is observable rather than opaque. Flat at 100% once finished.",
+          "datasource": { "type": "prometheus", "uid": "vm-target" },
+          "gridPos": { "h": 4, "w": 12, "x": 12, "y": 13 },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "100 * vmctl_vm_native_migration_metrics_processed / clamp_min(vmctl_vm_native_migration_metrics_total, 1)",
+              "legendFormat": "metrics migrated %"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": { "unit": "percent", "min": 0, "max": 100 },
+            "overrides": []
+          },
+          "options": { "legend": { "showLegend": true }, "tooltip": { "mode": "single" } }
+        },
+        {
+          "type": "row",
+          "title": "Seed logs, both sides",
+          "gridPos": { "h": 1, "w": 24, "x": 0, "y": 17 },
+          "collapsed": false,
+          "panels": []
+        },
+        {
+          "type": "logs",
+          "title": "SOURCE (EKS) — seed logs, read over the VPN",
+          "datasource": { "type": "victoriametrics-logs-datasource", "uid": "vl-source" },
+          "gridPos": { "h": 9, "w": 12, "x": 0, "y": 18 },
+          "targets": [
+            { "refId": "A", "expr": "dataset:seed" }
+          ],
+          "options": { "showTime": true, "sortOrder": "Descending", "wrapLogMessage": true }
+        },
+        {
+          "type": "logs",
+          "title": "TARGET (GKE) — the same logs, after migration",
+          "datasource": { "type": "victoriametrics-logs-datasource", "uid": "vl-target" },
+          "gridPos": { "h": 9, "w": 12, "x": 12, "y": 18 },
+          "targets": [
+            { "refId": "A", "expr": "dataset:seed" }
+          ],
+          "options": { "showTime": true, "sortOrder": "Descending", "wrapLogMessage": true }
+        }
+      ]
+    }

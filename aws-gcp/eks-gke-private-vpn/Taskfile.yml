@@ -1,0 +1,239 @@
+version: '3'
+
+dotenv: ['.env']
+
+# Lifecycle for the aws-gcp/eks-gke-private-vpn lab.
+#
+# One question: can a Pod in GKE reach a Pod in EKS over private addressing only? It stands up both
+# clusters, joins the two VPCs with a BGP-routed IPsec VPN, and proves the path with an echo server
+# behind an INTERNAL load balancer.
+#
+# Only init-state, up and deploy create cloud resources. fmt/validate/plan/vpn-status are cost-free.
+#
+# COST: an EKS control plane, a NAT gateway, 2 small EC2 nodes, a GKE Autopilot cluster, Cloud NAT, one
+# internal load balancer, two AWS VPN connections and two Cloud VPN tunnels. VPN connections and
+# tunnels bill from creation whether or not traffic flows.
+
+vars:
+  SOURCE_CLUSTER: xcvpn-source
+  TARGET_CLUSTER: xcvpn-target
+  AWS_CTX: xcvpn-aws
+  GCP_CTX: xcvpn-gcp
+  NS: vpn-test
+
+tasks:
+  default:
+    cmds: [task --list]
+    silent: true
+
+  init-env:
+    desc: Create a local .env from the template (no-op if .env already exists)
+    cmds:
+      - |
+        if [ -f .env ]; then
+          echo ".env already exists — leaving it untouched."
+        else
+          cp .env.example .env
+          echo "Created .env from .env.example — fill in your values."
+        fi
+
+  init-state:
+    desc: Create the GCS bucket for Terraform/Terragrunt remote state (idempotent; run once before `up`)
+    cmds:
+      - |
+        : "${GCP_PROJECT:?set GCP_PROJECT=<project id>}"
+        : "${TF_STATE_BUCKET:?set TF_STATE_BUCKET=<bucket name (no gs:// prefix)>}"
+        LOCATION="${GCP_REGION:-us-central1}"
+        if gcloud storage buckets describe "gs://$TF_STATE_BUCKET" --project "$GCP_PROJECT" >/dev/null 2>&1; then
+          echo "Bucket gs://$TF_STATE_BUCKET already exists — nothing to do."
+        else
+          gcloud storage buckets create "gs://$TF_STATE_BUCKET" \
+            --project "$GCP_PROJECT" --location "$LOCATION" \
+            --uniform-bucket-level-access --public-access-prevention
+        fi
+        gcloud storage buckets update "gs://$TF_STATE_BUCKET" --versioning
+
+  fmt:
+    desc: Format Terragrunt HCL
+    cmds: [terragrunt hcl format]
+
+  validate:
+    desc: Validate every infra unit (cost-free)
+    dir: infra
+    cmds: [terragrunt run --all validate]
+
+  lint:
+    desc: Lint Terraform/Terragrunt (cost-free)
+    cmds: [tflint --recursive]
+
+  plan:
+    desc: Plan all infra units (cost-free)
+    dir: infra
+    cmds: [terragrunt run --all plan]
+
+  up:
+    desc: 'Provision both VPCs, both clusters, and the three-phase cross-cloud VPN (creates cloud resources)'
+    dir: infra
+    cmds:
+      - terragrunt run --all apply --non-interactive
+      - |
+        echo ""
+        echo "Infra is up, but the VPN is not necessarily ready: tunnels take a couple of minutes to"
+        echo "establish and BGP a little longer to settle. Run 'task vpn-status' next."
+
+  vpn-status:
+    desc: 'Show whether both tunnels are up and BGP has exchanged routes (cost-free; run before `test`)'
+    cmds:
+      - |
+        : "${GCP_PROJECT:?set GCP_PROJECT}"
+        REGION="${GCP_REGION:-us-central1}"
+        ROUTER="$(cd infra/gcp/vpn-tunnels && terragrunt output -raw router_name)"
+
+        echo "=== Cloud VPN tunnels (GCP side) ==="
+        gcloud compute vpn-tunnels list --project "$GCP_PROJECT" \
+          --filter="region:($REGION)" --format="table(name, status, detailedStatus)"
+
+        echo ""
+        echo "=== BGP sessions and routes learned FROM AWS ==="
+        # The real test: a tunnel can sit ESTABLISHED while BGP never comes up (an ASN mismatch does
+        # exactly that), and then nothing routes even though everything looks connected.
+        gcloud compute routers get-status "$ROUTER" --project "$GCP_PROJECT" --region "$REGION" \
+          --format="yaml(result.bgpPeerStatus[].name, result.bgpPeerStatus[].state, result.bgpPeerStatus[].status, result.bgpPeerStatus[].advertisedRoutes[].destRange, result.bgpPeerStatus[].learnedRoutes[].destRange)"
+
+        echo ""
+        echo "Expect: both tunnels ESTABLISHED, both peers state=Established, learned routes covering"
+        echo "10.20.0.0/16 (the AWS VPC), and ADVERTISED routes including 10.31.0.0/16 (the GKE Pod"
+        echo "range) — that last one is what lets an EKS node reply to a GKE Pod."
+        echo ""
+        echo "Note: the SECOND tunnel of each AWS VPN connection stays DOWN by design. An HA VPN"
+        echo "interface pairs with one connection, so only tunnel 1 of each is used."
+
+  kubeconfig:
+    desc: Add kubeconfig entries for BOTH clusters under stable context names
+    cmds:
+      - |
+        : "${AWS_REGION:?set AWS_REGION}"
+        aws eks update-kubeconfig --name {{.SOURCE_CLUSTER}} --region "$AWS_REGION" --alias {{.AWS_CTX}}
+      - |
+        : "${GCP_PROJECT:?set GCP_PROJECT}"
+        REGION="${GCP_REGION:-us-central1}"
+        gcloud container clusters get-credentials {{.TARGET_CLUSTER}} --region "$REGION" --project "$GCP_PROJECT"
+        RAW="gke_${GCP_PROJECT}_${REGION}_{{.TARGET_CLUSTER}}"
+        kubectl config delete-context {{.GCP_CTX}} >/dev/null 2>&1 || true
+        kubectl config rename-context "$RAW" {{.GCP_CTX}}
+      - 'echo "Contexts ready: {{.AWS_CTX}} (EKS) and {{.GCP_CTX}} (GKE)."'
+
+  build:
+    desc: 'Compile both Go programs (cost-free) — catches a type error before any cloud resource is touched'
+    cmds:
+      - |
+        for d in deploy/echo deploy/probe; do
+          echo "==> $d"
+          ( cd "$d" && gofmt -l . | tee /dev/stderr | (! grep -q .) && go build ./... && go vet ./... )
+        done
+
+  deploy:
+    desc: 'Deploy the echo server on EKS behind an internal load balancer'
+    deps: [build]
+    cmds:
+      - kubectl --context {{.AWS_CTX}} apply -f deploy/echo-server.yaml
+      # The Go source travels as a ConfigMap and is compiled in-pod by `go run`, so this lab needs no
+      # container registry in either cloud — which matters here more than usual: a connectivity lab that
+      # required a working cross-cloud image pull before it could test connectivity would have the
+      # dependency backwards.
+      - |
+        kubectl --context {{.AWS_CTX}} -n {{.NS}} create configmap echo-src \
+          --from-file=deploy/echo/ --dry-run=client -o yaml \
+        | kubectl --context {{.AWS_CTX}} apply -f -
+      - kubectl --context {{.AWS_CTX}} -n {{.NS}} rollout restart deployment/echo-server
+      - kubectl --context {{.AWS_CTX}} -n {{.NS}} rollout status deployment/echo-server --timeout=5m
+      - |
+        echo "Waiting for the internal load balancer to get an address..."
+        for i in $(seq 1 40); do
+          HOST="$(kubectl --context {{.AWS_CTX}} -n {{.NS}} get svc echo-private-lb \
+            -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || true)"
+          if [ -n "$HOST" ]; then echo "  echo server: $HOST:8080 (private address only)"; exit 0; fi
+          echo "  not ready yet ($i/40) — retrying in 15s"; sleep 15
+        done
+        echo "ERROR: the load balancer never got an address." >&2
+        echo "Most common cause: the private subnets are missing the kubernetes.io/role/internal-elb" >&2
+        echo "or kubernetes.io/cluster/{{.SOURCE_CLUSTER}} tag, so subnet discovery found nothing." >&2
+        exit 1
+
+  test:
+    desc: 'Prove it: a Job in GKE calls the EKS echo server over private addressing only'
+    deps: [build]
+    cmds:
+      - kubectl --context {{.GCP_CTX}} create namespace {{.NS}} --dry-run=client -o yaml | kubectl --context {{.GCP_CTX}} apply -f -
+      - |
+        kubectl --context {{.GCP_CTX}} -n {{.NS}} create configmap probe-src \
+          --from-file=deploy/probe/ --dry-run=client -o yaml \
+        | kubectl --context {{.GCP_CTX}} apply -f -
+      - |
+        HOST="$(kubectl --context {{.AWS_CTX}} -n {{.NS}} get svc echo-private-lb \
+          -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')"
+        if [ -z "$HOST" ]; then
+          echo "ERROR: the echo server has no load balancer hostname — run 'task deploy' first." >&2
+          exit 1
+        fi
+        echo "==> calling $HOST:8080 from a Pod in GKE"
+        kubectl --context {{.GCP_CTX}} -n {{.NS}} delete job connectivity-test --ignore-not-found --wait=true
+        sed -e "s|__ECHO_HOST__|$HOST|g" deploy/connectivity-test-job.yaml \
+          | kubectl --context {{.GCP_CTX}} apply -f -
+
+        # Poll for EITHER outcome rather than `kubectl wait`: a failed connection is a legitimate
+        # result, and `--for=condition=complete` would just time out on it, turning "could not reach
+        # the other cloud" into "something hung". The failure is the instructive output here.
+        OUTCOME=""
+        for _ in $(seq 1 60); do
+          SUCCEEDED="$(kubectl --context {{.GCP_CTX}} -n {{.NS}} get job connectivity-test -o jsonpath='{.status.succeeded}' 2>/dev/null || true)"
+          FAILED="$(kubectl --context {{.GCP_CTX}} -n {{.NS}} get job connectivity-test -o jsonpath='{.status.failed}' 2>/dev/null || true)"
+          if [ "$SUCCEEDED" = "1" ]; then OUTCOME=passed; break; fi
+          if [ -n "$FAILED" ] && [ "$FAILED" != "0" ]; then OUTCOME=failed; break; fi
+          sleep 10
+        done
+
+        kubectl --context {{.GCP_CTX}} -n {{.NS}} logs job/connectivity-test || true
+        echo ""
+        case "$OUTCOME" in
+          passed) echo "Connectivity test PASSED." ;;
+          failed) echo "Connectivity test FAILED — see the diagnosis above." >&2; exit 1 ;;
+          *)      echo "Connectivity test did not finish in time." >&2; exit 1 ;;
+        esac
+
+  status:
+    desc: 'Show both sides at a glance'
+    cmds:
+      - echo "=== EKS ==="
+      - kubectl --context {{.AWS_CTX}} -n {{.NS}} get pods,svc
+      - echo ""
+      - echo "=== GKE ==="
+      - kubectl --context {{.GCP_CTX}} -n {{.NS}} get pods,jobs
+
+  clean-k8s:
+    desc: 'Remove the in-cluster pieces (REQUIRED before `down` — see the note)'
+    cmds:
+      # Not optional politeness: the internal load balancer is created by Kubernetes, so Terraform does
+      # not know it exists. Left behind, its ENIs and security groups keep the VPC alive and
+      # `terragrunt destroy` fails partway through with a dependency violation.
+      - kubectl --context {{.GCP_CTX}} -n {{.NS}} delete job connectivity-test --ignore-not-found || true
+      - kubectl --context {{.GCP_CTX}} delete namespace {{.NS}} --ignore-not-found --wait=false || true
+      - kubectl --context {{.AWS_CTX}} delete -f deploy/echo-server.yaml --ignore-not-found || true
+      - |
+        echo "==> waiting for the AWS load balancer to actually go away"
+        for i in $(seq 1 20); do
+          REMAINING="$(kubectl --context {{.AWS_CTX}} -n {{.NS}} get svc -o jsonpath='{.items[?(@.spec.type=="LoadBalancer")].metadata.name}' 2>/dev/null || true)"
+          [ -z "$REMAINING" ] && { echo "   gone"; break; }
+          echo "   still present: $REMAINING ($i/20)"; sleep 15
+        done
+
+  down:
+    desc: 'Destroy everything (runs clean-k8s first, then all infra on AWS and GCP)'
+    cmds:
+      - task: clean-k8s
+      - task: destroy-infra
+
+  destroy-infra:
+    internal: true
+    dir: infra
+    cmds: [terragrunt run --all destroy --non-interactive]

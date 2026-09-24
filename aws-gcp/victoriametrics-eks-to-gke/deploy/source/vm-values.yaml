@@ -1,0 +1,92 @@
+# SOURCE VictoriaMetrics stack (EKS) — the database we migrate AWAY from.
+#
+# `fullnameOverride: vmstack` is load-bearing: it names the VMSingle custom resource `vmstack`, so the
+# operator-managed Service is predictably `vmsingle-vmstack`. Without it the name is derived from the
+# release AND chart name (`vm-victoria-metrics-k8s-stack`), which every script would then have to
+# hardcode.
+fullnameOverride: vmstack
+
+# Alerting is out of scope for a migration lab; the rules would only add noise.
+defaultRules:
+  create: false
+alertmanager:
+  enabled: false
+vmalert:
+  enabled: false
+
+# Scrapes the cluster so the source holds REAL, continuously-growing data alongside the deterministic
+# seed dataset — the mix a production migration actually faces.
+vmagent:
+  enabled: true
+  spec:
+    # Stamps every scraped series with its cluster of ORIGIN, and this outlives the migration: series
+    # that came from here still say so once they are sitting in the target. Without it the two
+    # clusters' native metrics are indistinguishable — both have a kube-state-metrics producing
+    # identically-named series — and there would be no way to tell migrated data from the target's own.
+    externalLabels:
+      cluster: vmmig-source
+
+vmsingle:
+  enabled: true
+  spec:
+    # MUST exceed SEED_DAYS. VictoriaMetrics drops samples whose timestamps fall outside the retention
+    # window at INGEST time, so backdating 7 days into a 1-month-default store is fine but backdating
+    # into a 1-day store would silently discard the entire seed dataset.
+    retentionPeriod: "30d"
+
+    extraArgs:
+      # Makes re-ingesting identical samples a no-op instead of a duplicate. It matters on the source
+      # too: `task seed` becomes safe to re-run.
+      dedup.minScrapeInterval: 1ms
+      # vmctl exports a day at a time (see the migrate job). The default 30s export deadline is sized
+      # for interactive queries, not for handing a day of series to a migration tool.
+      search.maxExportDuration: 30m
+      search.maxExportSeries: "1000000"
+
+    # The ONLY way into this database from outside the cluster: an INTERNAL load balancer, reachable
+    # exclusively over the cross-cloud VPN. Declared as the VMSingle CR's serviceSpec so the OPERATOR
+    # owns the pod selector — hand-writing a selector here would silently break on any label change.
+    serviceSpec:
+      metadata:
+        name: vmsingle-endpoint
+        annotations:
+          service.beta.kubernetes.io/aws-load-balancer-internal: "true"
+          service.beta.kubernetes.io/aws-load-balancer-scheme: internal
+      spec:
+        type: LoadBalancer
+        # Defence in depth behind the private-only address: only the GKE node and Pod ranges may
+        # connect. The Pod range is here because GKE does not masquerade Pod traffic to RFC 1918
+        # destinations, so packets arrive with a Pod source address.
+        loadBalancerSourceRanges:
+          - 10.30.0.0/20
+          - 10.31.0.0/16
+        ports:
+          - name: http
+            port: 8428
+            targetPort: 8428
+
+kube-state-metrics:
+  enabled: true
+
+# Real nodes here (unlike the Autopilot target), so the node exporter can mount what it needs.
+prometheus-node-exporter:
+  enabled: true
+
+# Grafana lives on the TARGET only — one pane of glass, reading both sides.
+grafana:
+  enabled: false
+
+# EKS runs a managed control plane: these components aren't reachable, and the chart would create
+# scrape Services for them in kube-system for no benefit.
+kubeControllerManager:
+  enabled: false
+kubeScheduler:
+  enabled: false
+kubeEtcd:
+  enabled: false
+kubeProxy:
+  enabled: false
+coreDns:
+  enabled: false
+kubeDns:
+  enabled: false

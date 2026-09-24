@@ -1,0 +1,15 @@
+# TARGET VictoriaLogs (GKE Autopilot) — the log database we migrate INTO.
+#
+# Release name is pinned to `vl` by the Taskfile, so the Service is
+# `vl-victoria-logs-single-server:9428` on both clusters. Keeping the two sides' service names
+# identical means the migration script's only asymmetry is which address it dials, not what it is
+# called.
+vector:
+  enabled: false
+
+server:
+  retentionPeriod: "30d"
+
+  extraArgs:
+    # Verification reads the full history of the seed dataset from both sides.
+    search.maxQueryDuration: 30m

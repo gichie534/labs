@@ -1,0 +1,58 @@
+# Runs in GKE and calls the EKS echo server across the VPN. `__ECHO_HOST__` is substituted by
+# `task test` with the AWS internal load balancer hostname.
+#
+# The Go source arrives as the `probe-src` ConfigMap, built by `task test` from deploy/probe/.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: connectivity-test
+  namespace: vpn-test
+spec:
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 3600
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: probe
+          image: golang:1.24-alpine
+          workingDir: /app
+          command: ["go", "run", "."]
+          env:
+            - name: ECHO_URL
+              value: "http://__ECHO_HOST__:8080/"
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            - name: HOME
+              value: /tmp
+            - name: GOCACHE
+              value: /tmp/go-build
+            - name: GOMODCACHE
+              value: /tmp/gomodcache
+            - name: GOPATH
+              value: /tmp/gopath
+            - name: GOFLAGS
+              value: -buildvcs=false
+            - name: CGO_ENABLED
+              value: "0"
+          volumeMounts:
+            - name: src
+              mountPath: /app
+              readOnly: true
+            - name: gocache
+              mountPath: /tmp
+          resources:
+            requests:
+              cpu: 1000m
+              memory: 1Gi
+            limits:
+              cpu: 1000m
+              memory: 1Gi
+      volumes:
+        - name: src
+          configMap:
+            name: probe-src
+        - name: gocache
+          emptyDir: {}

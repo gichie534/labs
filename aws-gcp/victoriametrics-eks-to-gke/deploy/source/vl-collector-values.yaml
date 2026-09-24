@@ -1,0 +1,8 @@
+# SOURCE log collector (EKS): a DaemonSet that tails container logs and ships them to the source
+# VictoriaLogs. Its output is genuinely non-deterministic, which is the point — the migration has to
+# cope with live, growing data, not just the tidy seed dataset.
+#
+# Unlike the Autopilot target, EKS nodes allow ordinary hostPath mounts, so the chart's defaults work
+# as shipped and only the write target needs setting.
+remoteWrite:
+  - url: http://vl-victoria-logs-single-server.observability.svc:9428

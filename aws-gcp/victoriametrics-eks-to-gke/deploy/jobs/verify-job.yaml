@@ -1,0 +1,79 @@
+# Verifies the migration and publishes the result.
+#
+# Runs in the TARGET cluster and reads BOTH databases — the target in-cluster, the source across the VPN —
+# then diffs the seed dataset exactly and pushes its findings into the target VictoriaMetrics as
+# `migration_verify_*` gauges, which is what the Grafana dashboard displays.
+#
+# The Job FAILS (non-zero exit) on a mismatch, so it is a real gate and not just a report.
+#
+# Placeholders substituted by `task verify`: __SOURCE_VM_HOST__, __SOURCE_VL_HOST__, __MIGRATE_START__,
+# __MIGRATE_CUTOFF__.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: verify
+  namespace: observability
+  labels:
+    lab.role: verify
+spec:
+  # No retries: a mismatch is a real answer, and retrying it would only delay showing it.
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels:
+        lab.role: verify
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: verify
+          image: golang:1.24-alpine
+          workingDir: /app
+          command: ["go", "run", ".", "verify"]
+          env:
+            - name: SOURCE_VM_URL
+              value: "http://__SOURCE_VM_HOST__:8428"
+            - name: TARGET_VM_URL
+              value: "http://vmsingle-endpoint.observability.svc:8428"
+            - name: SOURCE_VL_URL
+              value: "http://__SOURCE_VL_HOST__:9428"
+            - name: TARGET_VL_URL
+              value: "http://vl-victoria-logs-single-server.observability.svc:9428"
+            - name: MIGRATE_START
+              value: "__MIGRATE_START__"
+            - name: MIGRATE_CUTOFF
+              value: "__MIGRATE_CUTOFF__"
+            # --- Go toolchain state, all under the writable emptyDir ---
+            - name: HOME
+              value: /tmp
+            - name: GOCACHE
+              value: /tmp/go-build
+            - name: GOMODCACHE
+              value: /tmp/gomodcache
+            - name: GOPATH
+              value: /tmp/gopath
+            - name: GOFLAGS
+              value: -buildvcs=false
+            - name: CGO_ENABLED
+              value: "0"
+          volumeMounts:
+            - name: src
+              mountPath: /app
+              readOnly: true
+            - name: gocache
+              mountPath: /tmp
+          resources:
+            # Verification holds the full seed history from BOTH sides in memory to diff it, on top of
+            # the compile.
+            requests:
+              cpu: 1000m
+              memory: 2Gi
+            limits:
+              cpu: 1000m
+              memory: 2Gi
+      volumes:
+        - name: src
+          configMap:
+            name: migrator-src
+        - name: gocache
+          emptyDir: {}
