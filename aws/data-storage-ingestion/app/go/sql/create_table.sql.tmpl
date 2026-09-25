@@ -1,0 +1,13 @@
+-- One table per ingestion path, with identical columns so the two can be compared directly.
+--
+-- `event_time`, not `timestamp`: Redshift would accept a column named after a type, but it reads badly
+-- and JSON COPY with 'auto' matches on column name, so the producer's JSON keys and these names have
+-- to agree anyway.
+--
+-- No distribution or sort key is declared. At this data volume it would be decoration; Redshift's
+-- AUTO defaults are the honest choice and saying so is better than cargo-culting a DISTKEY.
+CREATE TABLE IF NOT EXISTS {{.Table}} (
+    user_id    INTEGER,
+    event      VARCHAR(32),
+    event_time TIMESTAMP
+);

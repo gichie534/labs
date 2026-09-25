@@ -1,0 +1,7 @@
+-- Row count plus the event-time range actually present in the table. `verify` asserts the count is
+-- non-zero and reports the range, which is what proves the path delivered real records rather than an
+-- empty file.
+SELECT COUNT(*) AS row_count,
+       MIN(event_time) AS earliest_event,
+       MAX(event_time) AS latest_event
+FROM {{.Table}};

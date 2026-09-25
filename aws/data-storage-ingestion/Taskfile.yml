@@ -1,0 +1,143 @@
+version: '3'
+
+# Runtime inputs load once from the lab-root .env (top-level dotenv, resolved relative to
+# the lab root regardless of a task's `dir:`). A missing .env is harmless, so cost-free
+# tasks still run on a clean checkout.
+dotenv: ['.env']
+
+# Lifecycle for the aws/streaming-vs-batch-ingestion lab — the same events delivered to the same S3
+# bucket two ways, then loaded into Redshift and compared.
+#
+#   batch path   `task upload`   -> one PutObject to batch/  -> COPY (CSV)  -> user_events_batch
+#   stream path  `task produce`  -> Kinesis -> Firehose (60s buffer) -> stream/ -> COPY (JSON) -> user_events_stream
+#
+# `task verify` is the payoff: it asserts both paths landed and measures how stale each was on arrival.
+#
+# COST: only `up` creates cloud resources, and the Redshift Serverless workgroup is the expensive one
+# (billed per RPU-second while queries run). fmt/validate/plan/test are cost-free. Always `task down`.
+#
+# Env (see README / .env.example):
+#   AWS_REGION, TF_STATE_BUCKET, DATA_BUCKET   — required for real applies
+
+vars:
+  REGION: '{{.AWS_REGION | default "us-east-1"}}'
+  # Built by `build`; every data-plane task depends on it.
+  INGEST: ./app/go/bin/ingest
+  # Firehose's minimum buffer is 60s; add margin so `load` never runs against an unflushed buffer.
+  FLUSH_WAIT: 90
+
+tasks:
+  default:
+    cmds: [task --list]
+    silent: true
+
+  init-env:
+    desc: Create a local .env from the template (no-op if .env already exists, so it never clobbers your values)
+    cmds:
+      - |
+        if [ -f .env ]; then
+          echo ".env already exists — leaving it untouched."
+        else
+          cp .env.example .env
+          echo "Created .env from .env.example — fill in your values."
+        fi
+
+  fmt:
+    desc: Format Terragrunt HCL and Go
+    cmds:
+      - terragrunt hcl format
+      - gofmt -w ./app/go
+
+  validate:
+    desc: Validate every infra unit (cost-free)
+    dir: infra
+    cmds: [terragrunt run --all validate]
+
+  lint:
+    desc: Lint Terraform/Terragrunt
+    cmds:
+      - tflint --recursive
+
+  plan:
+    desc: Plan all infra units (cost-free)
+    dir: infra
+    cmds: [terragrunt run --all plan]
+
+  test:
+    desc: 'Run the Go CLI unit tests — the wire formats and SQL templates (cost-free, no AWS calls)'
+    dir: app/go
+    cmds: [go test ./...]
+
+  build:
+    desc: Build the ingest CLI to app/go/bin/ingest
+    dir: app/go
+    sources: ['**/*.go', 'sql/*.sql.tmpl', 'go.mod', 'go.sum']
+    generates: ['bin/ingest']
+    cmds:
+      - go build -o bin/ingest .
+
+  state-bootstrap:
+    desc: 'Create the S3 state bucket (run once; needs TF_STATE_BUCKET + admin creds)'
+    dir: infra
+    cmds:
+      - terragrunt backend bootstrap --all --non-interactive
+
+  up:
+    desc: 'Provision the VPC, data bucket, Kinesis stream, Firehose, and Redshift Serverless warehouse (creates cloud resources)'
+    dir: infra
+    cmds: [terragrunt run --all apply --non-interactive]
+
+  upload:
+    desc: 'BATCH path: generate a CSV and PutObject it to batch/ (immediately durable)'
+    deps: [build]
+    cmds: ['{{.INGEST}} upload']
+
+  produce:
+    desc: 'STREAM path: put events on the Kinesis stream (Firehose will buffer them for 60s)'
+    deps: [build]
+    cmds: ['{{.INGEST}} produce']
+
+  consume:
+    desc: 'Read records straight off the shards with a raw shard iterator (no Firehose involved)'
+    deps: [build]
+    cmds: ['{{.INGEST}} consume']
+
+  load:
+    desc: 'COPY both S3 prefixes into their Redshift tables (creates/truncates the tables first)'
+    deps: [build]
+    cmds: ['{{.INGEST}} load']
+
+  query:
+    desc: 'SELECT the first rows of both tables — the schema and data sanity check'
+    deps: [build]
+    cmds: ['{{.INGEST}} query']
+
+  setup-views:
+    desc: 'Create analytics views in Redshift for UI inspection and charting in Query Editor v2'
+    deps: [build]
+    cmds: ['{{.INGEST}} views']
+
+  views:
+    desc: 'Alias for setup-views'
+    deps: [setup-views]
+
+  verify:
+    desc: 'Assert both paths landed with no delivery failures, and report how stale each one was'
+    deps: [build]
+    cmds: ['{{.INGEST}} verify']
+
+  ingest:
+    desc: 'Run the whole experiment end to end: upload, produce, wait for the Firehose flush, load, verify'
+    deps: [build]
+    cmds:
+      - task: upload
+      - task: produce
+      - echo "Waiting {{.FLUSH_WAIT}}s for the Firehose buffer to flush to S3..."
+      - sleep {{.FLUSH_WAIT}}
+      - task: load
+      - task: verify
+
+  down:
+    desc: Destroy all infra
+    dir: infra
+    cmds: [terragrunt run --all destroy --non-interactive]

@@ -1,0 +1,3 @@
+-- COPY appends, so loading twice without this would double the rows and quietly invalidate every
+-- count `verify` makes. Truncating first is what makes `task load` safe to re-run.
+TRUNCATE TABLE {{.Table}};

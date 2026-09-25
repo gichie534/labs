@@ -1,0 +1,5 @@
+-- The "did the data actually land and is the schema right" check, in the most direct form there is.
+SELECT user_id, event, event_time
+FROM {{.Table}}
+ORDER BY event_time
+LIMIT 10;

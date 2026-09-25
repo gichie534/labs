@@ -1,0 +1,16 @@
+-- Load the STREAM path: the JSON records Firehose buffered and delivered as S3 objects.
+--
+-- No column list here. FORMAT AS JSON 'auto' maps each JSON key onto the column of the same name,
+-- which is exactly why the producer's struct tags and this table's column names have to agree.
+--
+-- Note what the batch path controlled and this one does not: the file format is whatever the producer
+-- emitted, and the object layout is whatever Firehose chose. A batch upload gets to decide both.
+--
+-- Only the stream/ prefix is read. Firehose writes undelivered records under errors/, so scoping the
+-- COPY this way means a delivery failure can never be silently counted as a successful load.
+COPY {{.Table}}
+FROM 's3://{{.Bucket}}/{{.Prefix}}'
+IAM_ROLE default
+REGION '{{.Region}}'
+FORMAT AS JSON 'auto'
+TIMEFORMAT 'auto';

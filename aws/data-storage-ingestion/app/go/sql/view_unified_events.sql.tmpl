@@ -1,0 +1,8 @@
+-- Combines batch and stream ingestion paths into a single unified dataset with a source tag.
+-- This allows comparative analysis and aggregated reporting across both pipelines.
+CREATE OR REPLACE VIEW v_unified_events AS
+SELECT user_id, event, event_time, 'BATCH' AS source_pipeline
+FROM {{.BatchTable}}
+UNION ALL
+SELECT user_id, event, event_time, 'STREAM' AS source_pipeline
+FROM {{.StreamTable}};

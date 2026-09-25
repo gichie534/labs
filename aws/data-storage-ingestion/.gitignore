@@ -1,0 +1,9 @@
+# Built CLI binary.
+app/go/bin/
+
+# Sample data the CLI generates before uploading it.
+app/go/testdata/generated/
+sample_data.csv
+
+# Task internal cache
+.task/

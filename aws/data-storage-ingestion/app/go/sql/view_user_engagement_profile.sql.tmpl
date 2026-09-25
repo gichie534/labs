@@ -1,0 +1,13 @@
+-- Aggregates engagement and event counts per user.
+-- Ideal for Stacked Bar or Donut Charts showing user activity breakdown.
+CREATE OR REPLACE VIEW v_user_engagement_profile AS
+SELECT
+    user_id,
+    COUNT(*) AS total_events,
+    SUM(CASE WHEN event = 'login' THEN 1 ELSE 0 END) AS logins,
+    SUM(CASE WHEN event = 'purchase' THEN 1 ELSE 0 END) AS purchases,
+    SUM(CASE WHEN event = 'logout' THEN 1 ELSE 0 END) AS logouts,
+    MIN(event_time) AS first_event_time,
+    MAX(event_time) AS last_event_time
+FROM v_unified_events
+GROUP BY user_id;

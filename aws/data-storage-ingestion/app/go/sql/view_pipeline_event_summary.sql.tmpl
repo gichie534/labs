@@ -1,0 +1,9 @@
+-- Aggregates event occurrences across both ingestion paths.
+-- Ideal for Grouped Bar Charts comparing batch vs streaming volumes by event type.
+CREATE OR REPLACE VIEW v_pipeline_event_summary AS
+SELECT
+    event,
+    source_pipeline,
+    COUNT(*) AS event_count
+FROM v_unified_events
+GROUP BY event, source_pipeline;

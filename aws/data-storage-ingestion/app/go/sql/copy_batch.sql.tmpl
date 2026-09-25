@@ -1,0 +1,15 @@
+-- Load the BATCH path: one CSV that was uploaded straight to S3 with a single PutObject.
+--
+-- The column list is explicit because CSV carries no field names. Position is the only mapping
+-- available, so this order must match the column order in the file.
+--
+-- IAM_ROLE default resolves to the COPY role the `redshift-serverless` module created and registered
+-- as the namespace default — no ARN to paste into SQL and nothing to keep in sync when the role is
+-- recreated.
+COPY {{.Table}} (user_id, event, event_time)
+FROM 's3://{{.Bucket}}/{{.Prefix}}'
+IAM_ROLE default
+REGION '{{.Region}}'
+FORMAT AS CSV
+IGNOREHEADER 1
+TIMEFORMAT 'auto';
