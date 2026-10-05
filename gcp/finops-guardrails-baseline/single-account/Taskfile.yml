@@ -1,0 +1,320 @@
+version: '3'
+
+# Runtime inputs load once from the lab-root .env (top-level dotenv, resolved relative to the lab root
+# regardless of a task's `dir:`). A missing .env is harmless, so cost-free tasks still run on a clean checkout.
+dotenv: ['.env']
+
+# Lifecycle for the gcp/finops-guardrails-baseline/single-account lab — the cost guardrails you want in place
+# BEFORE you need them, on one billing account (no Organization required). The GCP sibling of
+# aws/finops-guardrails-baseline/single-account.
+#
+# What gets created:
+#   apis               billingbudgets, cloudbilling, monitoring, pubsub, bigquery
+#   alert-channels     Cloud Monitoring email channel (no confirmation step, unlike SNS)
+#   budget-topic       Pub/Sub topic Billing may publish to + a pull subscription (the status feed)
+#   budget-monthly     the limit you chose: 50/80/100% of current spend + 100% of forecast
+#   budget-zero-spend  1% of $1, for the project you believed was idle
+#   export-dataset     US multi-region BigQuery dataset for the billing export
+#
+# What is NOT created by Terraform, because GCP exposes no API for it (see README / docs/adr):
+#   - Cost anomaly detection — already on for every project; thresholds and recipients are console-only.
+#   - The billing export itself — enabled once in the console, pointed at the dataset above.
+#
+# Cost: budgets, channels and anomaly detection are free. An idle Pub/Sub topic and a few KB of budget
+# messages sit inside the free tier. The export dataset is billed at BigQuery storage rates for what Google
+# writes into it (MBs a month on a quiet account). Only `init-state` and `up` create anything.
+#
+# Env (see .env.example):
+#   GCP_PROJECT, GCP_PROJECT_NUMBER, GCP_BILLING_ACCOUNT, TF_STATE_BUCKET, FINOPS_ALERT_EMAIL  — required
+#   GCP_REGION, FINOPS_MONTHLY_BUDGET, FINOPS_EXPORT_DATASET_LOCATION                         — optional
+
+vars:
+  MONTHLY_BUDGET: finops-baseline-monthly
+  ZERO_SPEND_BUDGET: finops-baseline-zero-spend
+  TOPIC: finops-budget-updates
+  SUBSCRIPTION: finops-budget-updates-pull
+  DATASET: billing_export
+  BILLING_PUBLISHER: billing-budget-alert@system.gserviceaccount.com
+  EXPORT_WRITER: billing-export-bigquery@system.gserviceaccount.com
+
+tasks:
+  default:
+    cmds: [task --list]
+    silent: true
+
+  init-env:
+    desc: Create a local .env from the template (no-op if .env already exists, so it never clobbers your values)
+    cmds:
+      - |
+        if [ -f .env ]; then
+          echo ".env already exists — leaving it untouched."
+        else
+          cp .env.example .env
+          echo "Created .env from .env.example — fill in your values."
+        fi
+
+  init-state:
+    desc: Create the GCS bucket for Terraform/Terragrunt remote state (idempotent; run once before `up`)
+    cmds:
+      - |
+        : "${GCP_PROJECT:?set GCP_PROJECT=<project id>}"
+        : "${TF_STATE_BUCKET:?set TF_STATE_BUCKET=<bucket name (no gs:// prefix)>}"
+        LOCATION="${GCP_REGION:-us-central1}"
+        if gcloud storage buckets describe "gs://$TF_STATE_BUCKET" --project "$GCP_PROJECT" >/dev/null 2>&1; then
+          echo "Bucket gs://$TF_STATE_BUCKET already exists — nothing to do."
+        else
+          echo "Creating gs://$TF_STATE_BUCKET in $LOCATION..."
+          gcloud storage buckets create "gs://$TF_STATE_BUCKET" \
+            --project "$GCP_PROJECT" \
+            --location "$LOCATION" \
+            --uniform-bucket-level-access \
+            --public-access-prevention
+        fi
+        gcloud storage buckets update "gs://$TF_STATE_BUCKET" --versioning
+
+  fmt:
+    desc: Format Terragrunt HCL
+    cmds:
+      - terragrunt hcl format
+
+  validate:
+    desc: Validate every infra unit (cost-free)
+    dir: infra
+    cmds: [terragrunt run --all validate]
+
+  lint:
+    desc: Lint Terraform/Terragrunt
+    cmds:
+      - tflint --recursive
+
+  plan:
+    desc: Plan all infra units (cost-free)
+    dir: infra
+    cmds: [terragrunt run --all plan]
+
+  preflight:
+    internal: true
+    cmds:
+      - |
+        set -euo pipefail
+        FAIL=0
+        for v in GCP_PROJECT GCP_PROJECT_NUMBER GCP_BILLING_ACCOUNT TF_STATE_BUCKET FINOPS_ALERT_EMAIL; do
+          eval "val=\${$v:-}"
+          case "$val" in
+            ''|REPLACE_WITH*) echo "ERROR: $v is not set (see .env.example)."; FAIL=1 ;;
+          esac
+        done
+        [ "$FAIL" -eq 0 ] || exit 1
+
+        # The two mistakes that otherwise surface as opaque API errors halfway through an apply.
+        ACTUAL_NUMBER="$(gcloud projects describe "$GCP_PROJECT" --format='value(projectNumber)')"
+        if [ "$ACTUAL_NUMBER" != "$GCP_PROJECT_NUMBER" ]; then
+          echo "ERROR: GCP_PROJECT_NUMBER=$GCP_PROJECT_NUMBER but $GCP_PROJECT is number $ACTUAL_NUMBER."; exit 1
+        fi
+        LINKED="$(gcloud billing projects describe "$GCP_PROJECT" --format='value(billingAccountName)')"
+        if [ "$LINKED" != "billingAccounts/$GCP_BILLING_ACCOUNT" ]; then
+          echo "ERROR: $GCP_PROJECT is billed to '${LINKED:-<none>}', not billingAccounts/$GCP_BILLING_ACCOUNT."
+          echo "       A budget on the wrong account filters to a project it never sees, and stays at zero forever."
+          exit 1
+        fi
+
+  up:
+    desc: 'Provision the APIs, alert channel, budget topic, both budgets and the export dataset (creates cloud resources)'
+    deps: [preflight]
+    dir: infra
+    cmds:
+      - terragrunt run --all apply --non-interactive
+      - |
+        cat <<EOF
+
+        ── One manual step left: enable the billing export (there is no API for it) ──────────────────────
+          1. Open https://console.cloud.google.com/billing/${GCP_BILLING_ACCOUNT}/export
+          2. BigQuery export → Detailed usage cost → Edit settings
+          3. Project: ${GCP_PROJECT}    Dataset: {{.DATASET}}    → Save
+        Data starts within a few hours; the current and previous month backfill over up to 5 days.
+        Then run: task verify
+        EOF
+
+  verify:
+    desc: 'Assert every guardrail exists, is wired to a live channel, and report what Terraform cannot manage (cost-free)'
+    cmds:
+      - |
+        set -euo pipefail
+        : "${GCP_PROJECT:?set GCP_PROJECT}"; : "${GCP_BILLING_ACCOUNT:?set GCP_BILLING_ACCOUNT}"
+        : "${GCP_PROJECT_NUMBER:?set GCP_PROJECT_NUMBER}"
+        FAIL=0
+        pass() { echo "  PASS: $1"; }
+        fail() { echo "  FAIL: $1"; FAIL=1; }
+        warn() { echo "  WARN: $1"; }
+        info() { echo "  INFO: $1"; }
+
+        echo "== alert channel =="
+        TOKEN="$(gcloud auth print-access-token)"
+        CHANNELS="$(curl -fsS -H "Authorization: Bearer $TOKEN" \
+          "https://monitoring.googleapis.com/v3/projects/${GCP_PROJECT}/notificationChannels?filter=type%3D%22email%22")"
+        LIVE_CHANNELS="$(echo "$CHANNELS" | jq -r '[.notificationChannels[]? | select(.enabled != false) | .name] | join(" ")')"
+        if [ -n "$LIVE_CHANNELS" ]; then
+          echo "$CHANNELS" | jq -r '.notificationChannels[]? | "  INFO: \(.displayName)  enabled=\(.enabled // true)"'
+          pass "enabled email channel(s) exist. Check the address above is right — email channels have no confirmation step to catch a typo."
+        else
+          fail "no enabled email notification channel in ${GCP_PROJECT}."
+        fi
+        echo
+
+        echo "== budgets =="
+        # Budgets live on the billing account and display names are NOT unique, so look them up by name and
+        # treat duplicates (e.g. a console copy) as a failure rather than picking one.
+        BUDGETS="$(gcloud billing budgets list --billing-account="$GCP_BILLING_ACCOUNT" \
+          --billing-project="$GCP_PROJECT" --format=json)"
+        for budget in "{{.MONTHLY_BUDGET}}" "{{.ZERO_SPEND_BUDGET}}"; do
+          b="$(echo "$BUDGETS" | jq --arg n "$budget" '[.[] | select(.displayName == $n)]')"
+          count="$(echo "$b" | jq length)"
+          if [ "$count" -eq 0 ]; then fail "budget '$budget' not found."; continue; fi
+          if [ "$count" -gt 1 ]; then fail "$count budgets named '$budget' — display names are not unique; delete the stray copy."; continue; fi
+
+          thresholds="$(echo "$b" | jq '.[0].thresholdRules | length')"
+          scoped="$(echo "$b" | jq --arg p "projects/$GCP_PROJECT_NUMBER" '.[0].budgetFilter.projects // [] | index($p) != null')"
+          wired="$(echo "$b" | jq --arg live "$LIVE_CHANNELS" \
+            '[.[0].notificationsRule.monitoringNotificationChannels[]? | select(. as $c | $live | split(" ") | index($c))] | length')"
+          topic="$(echo "$b" | jq -r '.[0].notificationsRule.pubsubTopic // ""')"
+
+          [ "$thresholds" -gt 0 ] && pass "budget '$budget' has $thresholds threshold(s)." || fail "budget '$budget' has no thresholds — it alerts nobody."
+          [ "$scoped" = "true" ] && pass "budget '$budget' is scoped to projects/$GCP_PROJECT_NUMBER." || fail "budget '$budget' is not scoped to this project — it is measuring something else."
+          [ "$wired" -gt 0 ] && pass "budget '$budget' notifies $wired live email channel(s)." || fail "budget '$budget' references no live email channel."
+          [ -n "$topic" ] && pass "budget '$budget' publishes to $topic." || warn "budget '$budget' has no Pub/Sub topic."
+        done
+        echo
+
+        echo "== budget feed (Pub/Sub) =="
+        if gcloud pubsub topics describe "{{.TOPIC}}" --project "$GCP_PROJECT" >/dev/null 2>&1; then
+          pass "topic '{{.TOPIC}}' exists."
+          # The GCP twin of the SNS topic policy: without this grant Billing's publishes are refused silently.
+          if gcloud pubsub topics get-iam-policy "{{.TOPIC}}" --project "$GCP_PROJECT" --format=json \
+               | jq -e --arg m "serviceAccount:{{.BILLING_PUBLISHER}}" \
+                   '.bindings[]? | select(.role == "roles/pubsub.publisher") | .members | index($m)' >/dev/null; then
+            pass "{{.BILLING_PUBLISHER}} may publish."
+          else
+            fail "{{.BILLING_PUBLISHER}} has no publisher grant — budget messages would be refused."
+          fi
+          if gcloud pubsub subscriptions describe "{{.SUBSCRIPTION}}" --project "$GCP_PROJECT" >/dev/null 2>&1; then
+            pass "subscription '{{.SUBSCRIPTION}}' exists (without one, every message is discarded)."
+          else
+            fail "subscription '{{.SUBSCRIPTION}}' not found."
+          fi
+        else
+          fail "topic '{{.TOPIC}}' not found."
+        fi
+        echo
+
+        echo "== billing export =="
+        if DS="$(bq --project_id="$GCP_PROJECT" show --format=json "${GCP_PROJECT}:{{.DATASET}}" 2>/dev/null)"; then
+          pass "dataset '{{.DATASET}}' exists in $(echo "$DS" | jq -r .location)."
+          if echo "$DS" | jq -e '.defaultTableExpirationMs' >/dev/null; then
+            fail "dataset has a default table expiration — expired export tables cannot be backfilled."
+          fi
+          TABLES="$(bq --project_id="$GCP_PROJECT" ls --format=json "${GCP_PROJECT}:{{.DATASET}}" \
+            | jq '[.[]? | select(.tableReference.tableId | startswith("gcp_billing_export_resource_v1_"))] | length')"
+          if [ "$TABLES" -gt 0 ]; then
+            pass "detailed export table present — the export is enabled and writing."
+          else
+            warn "no detailed export table yet. Either the export is not enabled (console step printed by 'task up'), or it was enabled in the last few hours."
+          fi
+          if echo "$DS" | jq -e --arg sa "{{.EXPORT_WRITER}}" '.access[]? | select(.userByEmail == $sa)' >/dev/null; then
+            info "Google's export account is an owner of the dataset — do not remove it."
+          fi
+        else
+          fail "dataset '{{.DATASET}}' not found."
+        fi
+        echo
+
+        echo "== cost anomaly detection (not managed by Terraform) =="
+        info "On by default for every project; there is no API to read or set its thresholds or recipients."
+        info "Review once: https://console.cloud.google.com/billing/${GCP_BILLING_ACCOUNT}/anomalies → Manage anomalies."
+        echo
+
+        echo "== summary =="
+        if [ "$FAIL" -eq 0 ]; then
+          echo "PASS: the guardrails are in place and wired to a live channel."
+        else
+          echo "FAIL: at least one guardrail is missing or mute (see above)."
+          exit 1
+        fi
+
+  test-alert:
+    desc: 'Publish a test message to the budget topic and read it back — proves the Pub/Sub path end to end without waiting for spend'
+    cmds:
+      - |
+        set -euo pipefail
+        : "${GCP_PROJECT:?set GCP_PROJECT}"
+        ID="$(gcloud pubsub topics publish "{{.TOPIC}}" --project "$GCP_PROJECT" \
+          --message '{"test":"finops-guardrails-baseline"}' --attribute test=true --format='value(messageIds)')"
+        echo "Published message $ID. Reading it back..."
+        for _ in 1 2 3 4 5; do
+          ACK="$(gcloud pubsub subscriptions pull "{{.SUBSCRIPTION}}" --project "$GCP_PROJECT" --limit=100 --format=json \
+            | jq -r --arg id "$ID" '.[] | select(.message.messageId == $id) | .ackId')"
+          if [ -n "$ACK" ]; then
+            gcloud pubsub subscriptions ack "{{.SUBSCRIPTION}}" --project "$GCP_PROJECT" --ack-ids="$ACK" >/dev/null
+            echo "PASS: the message reached the subscription (and was acked so it does not linger)."
+            echo "The email path cannot be exercised without real spend; the zero-spend guard proves it on the first cent."
+            exit 0
+          fi
+          sleep 3
+        done
+        echo "FAIL: message not seen on '{{.SUBSCRIPTION}}' — run 'task verify'."; exit 1
+
+  show-spend:
+    desc: 'Latest budget status from the Pub/Sub feed, plus month-to-date cost by service and by attribution bucket from the export (cost-free on a quiet account)'
+    cmds:
+      - |
+        set -euo pipefail
+        : "${GCP_PROJECT:?set GCP_PROJECT}"
+        echo "== latest budget status (from the Pub/Sub feed; Billing publishes several times a day) =="
+        # Pull WITHOUT acking, so the feed is left as it was. Pull is best-effort, so this is "a recent status",
+        # not guaranteed to be the very latest.
+        gcloud pubsub subscriptions pull "{{.SUBSCRIPTION}}" --project "$GCP_PROJECT" --limit=100 --format=json \
+          | jq -r '[.[] | select(.message.attributes.budgetId != null)
+                     | (.message.data | @base64d | fromjson) + {publishTime: .message.publishTime}]
+                   | group_by(.budgetDisplayName)
+                   | map(max_by(.publishTime))[]
+                   | "  \(.budgetDisplayName): \(.costAmount) of \(.budgetAmount) \(.currencyCode) since \(.costIntervalStart)"' \
+          || true
+        echo "  (empty for the first hour or so after 'task up')"
+        echo
+
+        TABLES="$(bq --project_id="$GCP_PROJECT" ls --format=json "${GCP_PROJECT}:{{.DATASET}}" 2>/dev/null \
+          | jq '[.[]? | select(.tableReference.tableId | startswith("gcp_billing_export_resource_v1_"))] | length' || echo 0)"
+        if [ "$TABLES" -eq 0 ]; then
+          echo "No export data yet — see the console step printed by 'task up'."
+          exit 0
+        fi
+
+        TABLE="\`${GCP_PROJECT}.{{.DATASET}}.gcp_billing_export_resource_v1_*\`"
+        # Promotional credits are left OUT of the net figure on purpose, matching the budgets (docs/adr/0003).
+        NET="SUM(cost) + SUM(IFNULL((SELECT SUM(c.amount) FROM UNNEST(credits) c WHERE c.type != 'PROMOTION'), 0))"
+        WHERE="DATE(_PARTITIONTIME) >= DATE_SUB(CURRENT_DATE(), INTERVAL 40 DAY)
+               AND invoice.month = FORMAT_DATE('%Y%m', CURRENT_DATE('America/Los_Angeles'))
+               AND project.id = '${GCP_PROJECT}'"
+
+        echo "== month-to-date by service (net of discounts and free tier, gross of promotional credits) =="
+        bq --project_id="$GCP_PROJECT" query --nouse_legacy_sql --format=pretty \
+          "SELECT service.description AS service, ROUND(${NET}, 2) AS cost
+           FROM ${TABLE} WHERE ${WHERE}
+           GROUP BY service HAVING cost != 0 ORDER BY cost DESC"
+
+        echo "== the same spend by attribution bucket (labels need no activation on GCP — docs/adr/0004) =="
+        bq --project_id="$GCP_PROJECT" query --nouse_legacy_sql --format=pretty \
+          "SELECT CASE
+                    WHEN cost_type != 'regular' THEN 'shared-charges'
+                    WHEN EXISTS (SELECT 1 FROM UNNEST(labels) l WHERE l.key = 'managed-by' AND l.value = 'terragrunt') THEN 'iac-managed'
+                    ELSE 'unlabelled'
+                  END AS bucket,
+                  ROUND(${NET}, 2) AS cost
+           FROM ${TABLE} WHERE ${WHERE}
+           GROUP BY bucket ORDER BY cost DESC"
+
+  down:
+    desc: Destroy all infra (the export setting in the console is not touched — disable it there)
+    dir: infra
+    cmds:
+      - terragrunt run --all destroy --non-interactive
+      - echo "Reminder - the billing export still points at the deleted dataset. Disable it at https://console.cloud.google.com/billing/${GCP_BILLING_ACCOUNT}/export"

@@ -1,0 +1,5 @@
+# policy.yaml
+constraint: constraints/iam.allowedPolicyMemberDomains
+listPolicy:
+  allValues: ALLOW
+
