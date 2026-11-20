@@ -1,0 +1,40 @@
+[project]
+name = "business-insights-agent"
+version = "0.1.0"
+description = "ADK agent on Gemini Enterprise Agent Platform that answers business questions from Slack."
+requires-python = ">=3.12,<3.13"
+dependencies = [
+  # Same pins as business_insights/requirements.txt (what Agent Runtime installs).
+  "google-adk[mcp]==2.14.1",
+  "google-cloud-agentplatform[adk]==2.10.0",
+  # agentplatform's AdkApp imports google.cloud.aiplatform when it sets up telemetry (always on in Agent Runtime)
+  # but doesn't depend on it.
+  "google-cloud-aiplatform==2.10.0",
+  "google-cloud-storage==3.17.1",
+]
+
+[dependency-groups]
+dev = [
+  "google-cloud-bigquery==3.47.0",
+  "pandas>=2.2",
+  "pytest==9.2.0",
+  "pytest-asyncio==1.5.0",
+  "pyyaml==6.0.3",
+  "ruff>=0.14",
+]
+
+[tool.uv]
+package = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "BLE"]

@@ -1,0 +1,8 @@
+# Installed by Agent Runtime when it builds a revision (requirements_file in lifecycle/release.py).
+# Pinned for reproducible revisions; keep in step with pyproject.toml.
+google-adk[mcp]==2.14.1
+google-cloud-agentplatform[adk]==2.10.0
+# AdkApp imports google.cloud.aiplatform when it sets up telemetry, which Agent Runtime always enables, but
+# google-cloud-agentplatform doesn't depend on it. Without it the container fails to start.
+google-cloud-aiplatform==2.10.0
+google-cloud-storage==3.17.1

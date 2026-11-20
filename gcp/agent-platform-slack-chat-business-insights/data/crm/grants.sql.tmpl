@@ -1,0 +1,11 @@
+-- Read-only access for the IAM database user of the bi-crm-reader service account (the identity the agent borrows
+-- for Cloud SQL). Rendered by scripts/seed.sh and imported with `gcloud sql import sql` as the postgres user.
+--
+-- Terraform (infra/cloud-sql/crm) creates the IAM user itself; Cloud SQL creates IAM database users with no privileges on
+-- any database, so this file is the whole of its database access: CONNECT, USAGE on public, SELECT on two tables.
+-- Even a read-write SQL tool would be refused writes by PostgreSQL.
+REVOKE ALL ON DATABASE __DATABASE__ FROM PUBLIC;
+REVOKE CREATE ON SCHEMA public FROM PUBLIC;
+GRANT CONNECT ON DATABASE __DATABASE__ TO "__USER__";
+GRANT USAGE ON SCHEMA public TO "__USER__";
+GRANT SELECT ON users, orders TO "__USER__";

@@ -1,0 +1,317 @@
+version: '3'
+
+# Runtime inputs load once from the lab-root .env (top-level dotenv, resolved relative to the lab root regardless of
+# a task's `dir:`). A missing .env is harmless, so cost-free tasks still run on a clean checkout.
+dotenv: ['.env']
+
+# Lifecycle for the gcp/agent-platform-slack-chat-business-insights lab.
+#
+# An ADK agent on Gemini Enterprise Agent Platform (Agent Runtime) answers business questions in Slack from Cloud
+# SQL (CRM), BigQuery (warehouse) and GCS (glossary), as its own Agent Identity, behind Model Armor and IAM deny
+# guardrails, with revisions + traffic splitting, an eval gate, Memory Bank and Cloud Trace.
+#
+# First run:
+#   init-env -> init-state -> up -> seed -> deploy -> eval:engine
+#   slack:check -> slack:manifest (create the Slack app) -> slack:secrets -> chat in Slack (docs/slack-setup.md)
+# Release loop (what CI automates):
+#   deploy:agent (new revision at 0%) -> eval:revision -> traffic:canary -> traffic:promote | traffic:rollback
+#
+# Only init-state, up, seed, slack:secrets, deploy*, traffic:* and gateway:* create or change cloud resources.
+# fmt / validate / lint / plan / test are cost-free.
+
+vars:
+  APP_PY: app/python
+  APP_GO: app/go/slack-bridge
+  IMAGE_NAME: slack-bridge
+  BRIDGE_REPO: bi-slack-bridge
+  INGRESS_SERVICE: bi-slack-ingress
+  WORKER_SERVICE: bi-slack-worker
+  # Unique per `task` invocation (commit + UTC time): the bridge repository has immutable tags, so a tag can't be
+  # pushed twice. Task evaluates this once per run, so build, push and deploy:bridge in one run share it. To push
+  # or deploy an image built in an earlier run, pass it explicitly: task deploy:bridge TAG=<tag>.
+  TAG:
+    sh: echo "$(git rev-parse --short=12 HEAD 2>/dev/null || echo dev)-$(date -u +%Y%m%d-%H%M%S)"
+
+tasks:
+  default:
+    cmds: [task --list]
+    silent: true
+
+  init-env:
+    desc: Create a local .env from the template (no-op if .env already exists)
+    cmds:
+      - |
+        if [ -f .env ]; then
+          echo ".env already exists — leaving it untouched."
+        else
+          cp .env.example .env
+          echo "Created .env from .env.example — fill in your values."
+        fi
+
+  init-state:
+    desc: Create the GCS bucket for Terraform/Terragrunt remote state (idempotent; run once before `up`)
+    cmds:
+      - |
+        : "${GCP_PROJECT:?set GCP_PROJECT=<project id>}"
+        : "${TF_STATE_BUCKET:?set TF_STATE_BUCKET=<bucket name (no gs:// prefix)>}"
+        LOCATION="${GCP_REGION:-us-central1}"
+        if gcloud storage buckets describe "gs://$TF_STATE_BUCKET" --project "$GCP_PROJECT" >/dev/null 2>&1; then
+          echo "Bucket gs://$TF_STATE_BUCKET already exists — nothing to do."
+        else
+          gcloud storage buckets create "gs://$TF_STATE_BUCKET" --project "$GCP_PROJECT" --location "$LOCATION" \
+            --uniform-bucket-level-access --public-access-prevention
+        fi
+        gcloud storage buckets update "gs://$TF_STATE_BUCKET" --versioning
+
+  # ---------------------------------------------------------------------------------------------------------------
+  # Cost-free checks
+  # ---------------------------------------------------------------------------------------------------------------
+  fmt:
+    desc: Format Terragrunt HCL, Go and Python
+    cmds:
+      - terragrunt hcl format
+      - gofmt -w {{.APP_GO}}
+      - cd {{.APP_PY}} && uv run ruff format . && uv run ruff check --fix .
+
+  validate:
+    desc: Validate every infra unit (cost-free; needs the state bucket and ADC)
+    dir: infra
+    cmds: [terragrunt run --all validate]
+
+  lint:
+    desc: Lint Terragrunt/Terraform, Go and Python
+    cmds:
+      - terragrunt hcl format --check
+      - tflint --recursive
+      - cd {{.APP_GO}} && go vet ./...
+      - cd {{.APP_PY}} && uv run ruff check . && uv run ruff format --check .
+
+  plan:
+    desc: Plan all infra units (cost-free)
+    dir: infra
+    cmds: [terragrunt run --all plan]
+
+  test:
+    desc: Unit tests — Python agent/lifecycle/evals and the Go Slack bridge (no cloud access)
+    cmds:
+      - cd {{.APP_PY}} && uv run pytest -q
+      - cd {{.APP_GO}} && go test ./...
+
+  # ---------------------------------------------------------------------------------------------------------------
+  # Infrastructure and data
+  # ---------------------------------------------------------------------------------------------------------------
+  up:
+    desc: Provision everything except agent code and the bridge image (creates cloud resources; Cloud SQL is billed hourly)
+    dir: infra
+    cmds: [terragrunt run --all apply --non-interactive]
+
+  seed:
+    desc: Copy TheLook data into BigQuery + Cloud SQL, create the read-only DB user, upload the glossary
+    cmds: [./scripts/seed.sh]
+
+  # ---------------------------------------------------------------------------------------------------------------
+  # Agent: local development, releases, evaluation, traffic
+  # ---------------------------------------------------------------------------------------------------------------
+  dev:
+    desc: Chat with the agent locally in the ADK web UI (runs as your ADC identity, against the lab's real data)
+    dir: '{{.APP_PY}}'
+    cmds:
+      - |
+        : "${GCP_PROJECT:?set GCP_PROJECT}"
+        export BI_PROJECT_ID="$GCP_PROJECT" BI_REGION="${GCP_REGION:-us-central1}"
+        uv run adk web --port 8000 .
+
+  deploy:
+    desc: Release the agent (new revision) and roll out the Slack bridge image
+    cmds:
+      - task: deploy:agent
+      - task: deploy:bridge
+
+  deploy:agent:
+    desc: Ship the agent as a new revision at 0% traffic (the first release takes 100%)
+    dir: '{{.APP_PY}}'
+    cmds:
+      - |
+        export AGENT_ENGINE_ID="$(../../scripts/engine-id.sh)"
+        uv run python -m lifecycle.release release
+
+  eval:
+    desc: Ground-truth eval of the agent running locally (in-process, your ADC)
+    dir: '{{.APP_PY}}'
+    cmds:
+      - uv run python -m evals.run --target local --report ../../eval-report-local.json {{.CLI_ARGS}}
+
+  eval:revision:
+    desc: 'Eval one deployed revision before it gets traffic — task eval:revision REVISION=<id>'
+    dir: '{{.APP_PY}}'
+    requires:
+      vars: [REVISION]
+    cmds:
+      - |
+        export AGENT_ENGINE_ID="$(../../scripts/engine-id.sh)"
+        uv run python -m evals.run --target revision --revision {{.REVISION}} --report ../../eval-report-{{.REVISION}}.json {{.CLI_ARGS}}
+
+  eval:engine:
+    desc: Eval the deployed engine (whatever the traffic split routes to); add -- --platform-eval for the LLM judge
+    dir: '{{.APP_PY}}'
+    cmds:
+      - |
+        export AGENT_ENGINE_ID="$(../../scripts/engine-id.sh)"
+        uv run python -m evals.run --target engine --report ../../eval-report-engine.json {{.CLI_ARGS}}
+
+  smoke:
+    desc: 'One question to the engine, or to a revision with REVISION=<id>'
+    dir: '{{.APP_PY}}'
+    cmds:
+      - |
+        export AGENT_ENGINE_ID="$(../../scripts/engine-id.sh)"
+        uv run python -m lifecycle.release smoke {{if .REVISION}}--revision {{.REVISION}}{{end}}
+
+  traffic:status:
+    desc: Revisions of the agent and how traffic is split between them
+    dir: '{{.APP_PY}}'
+    cmds:
+      - export AGENT_ENGINE_ID="$(../../scripts/engine-id.sh)" && uv run python -m lifecycle.release status
+
+  traffic:canary:
+    desc: 'Send PERCENT (default 10) of traffic to REVISION — task traffic:canary REVISION=<id> PERCENT=10'
+    dir: '{{.APP_PY}}'
+    requires:
+      vars: [REVISION]
+    cmds:
+      - export AGENT_ENGINE_ID="$(../../scripts/engine-id.sh)" && uv run python -m lifecycle.release canary --revision {{.REVISION}} --percent {{.PERCENT | default "10"}}
+
+  traffic:promote:
+    desc: 'Send 100% of traffic to REVISION'
+    dir: '{{.APP_PY}}'
+    requires:
+      vars: [REVISION]
+    cmds:
+      - export AGENT_ENGINE_ID="$(../../scripts/engine-id.sh)" && uv run python -m lifecycle.release promote --revision {{.REVISION}}
+
+  traffic:rollback:
+    desc: Move all traffic back to the previous stable revision
+    dir: '{{.APP_PY}}'
+    cmds:
+      - export AGENT_ENGINE_ID="$(../../scripts/engine-id.sh)" && uv run python -m lifecycle.release rollback
+
+  traffic:latest:
+    desc: Switch to "always latest" (each new revision takes 100% immediately; required before a gateway binding change)
+    dir: '{{.APP_PY}}'
+    cmds:
+      - export AGENT_ENGINE_ID="$(../../scripts/engine-id.sh)" && uv run python -m lifecycle.release latest
+
+  # ---------------------------------------------------------------------------------------------------------------
+  # Slack bridge
+  # ---------------------------------------------------------------------------------------------------------------
+  build:
+    desc: Build the Slack bridge image locally (linux/amd64 for Cloud Run)
+    cmds:
+      - docker build --platform linux/amd64 -t {{.IMAGE_NAME}}:{{.TAG}} {{.APP_GO}}
+
+  push:
+    desc: Push the bridge image to Artifact Registry (mirrors CI)
+    deps: [build]
+    cmds:
+      - |
+        : "${GCP_PROJECT:?set GCP_PROJECT}"
+        REGISTRY="${GCP_REGION:-us-central1}-docker.pkg.dev/$GCP_PROJECT/{{.BRIDGE_REPO}}"
+        gcloud auth configure-docker "${GCP_REGION:-us-central1}-docker.pkg.dev" --quiet
+        docker tag {{.IMAGE_NAME}}:{{.TAG}} "$REGISTRY/{{.IMAGE_NAME}}:{{.TAG}}"
+        docker push "$REGISTRY/{{.IMAGE_NAME}}:{{.TAG}}"
+
+  deploy:bridge:
+    desc: Roll the pushed bridge image out to the ingress and worker services (Terraform owns their config)
+    deps: [push]
+    cmds:
+      - |
+        IMAGE="${GCP_REGION:-us-central1}-docker.pkg.dev/$GCP_PROJECT/{{.BRIDGE_REPO}}/{{.IMAGE_NAME}}:{{.TAG}}"
+        for svc in {{.INGRESS_SERVICE}} {{.WORKER_SERVICE}}; do
+          gcloud run services update "$svc" --image "$IMAGE" --region "${GCP_REGION:-us-central1}" --project "$GCP_PROJECT" --quiet
+        done
+
+  slack:manifest:
+    desc: Print the Slack app manifest with this lab's ingress URL (paste it at api.slack.com/apps)
+    cmds:
+      - |
+        URL="$(gcloud run services describe {{.INGRESS_SERVICE}} --region "${GCP_REGION:-us-central1}" --project "$GCP_PROJECT" --format='value(status.url)')"
+        sed "s#__INGRESS_URL__#$URL#" slack/manifest.yaml.tmpl
+
+  slack:secrets:
+    desc: Store SLACK_SIGNING_SECRET and SLACK_BOT_TOKEN from .env in Secret Manager
+    cmds: [./scripts/slack-secrets.sh]
+
+  slack:check:
+    desc: Print the Slack Request URL and check the ingress runs the bridge (not the bootstrap hello container)
+    cmds:
+      - |
+        URL="$(gcloud run services describe {{.INGRESS_SERVICE}} --region "${GCP_REGION:-us-central1}" --project "$GCP_PROJECT" --format='value(status.url)')"
+        echo "Request URL: $URL/slack/events"
+        BODY="$(curl -s -m 10 "$URL/health" || true)"
+        if [ "$BODY" = "ok" ]; then
+          echo "ingress healthy"
+        else
+          echo "The ingress isn't serving the bridge yet (bootstrap hello container?). Run: task deploy:bridge" >&2
+          exit 1
+        fi
+
+  slack:allowlist:
+    desc: Apply SLACK_ALLOWED_CHANNELS from .env to the ingress (re-applies only that service; the image stays)
+    dir: infra/cloud-run/slack-ingress
+    cmds: [terragrunt apply --non-interactive]
+
+  slack:logs:
+    desc: Last 30 minutes of Slack bridge logs (ingress and worker)
+    cmds:
+      - |
+        gcloud logging read \
+          'resource.type="cloud_run_revision" AND resource.labels.service_name=("{{.INGRESS_SERVICE}}" OR "{{.WORKER_SERVICE}}")' \
+          --project "$GCP_PROJECT" --freshness 30m --limit 100 --order asc \
+          --format='table(timestamp.date("%H:%M:%S"), resource.labels.service_name, severity, jsonPayload.message, jsonPayload.error, jsonPayload.channel, jsonPayload.agent_session_id)'
+
+  # ---------------------------------------------------------------------------------------------------------------
+  # Governance
+  # ---------------------------------------------------------------------------------------------------------------
+  registry:list:
+    desc: What Agent Registry knows about in this project/region (agents, endpoints, MCP servers)
+    cmds:
+      - |
+        BASE="https://agentregistry.googleapis.com/v1/projects/$GCP_PROJECT/locations/${GCP_REGION:-us-central1}"
+        for kind in agents endpoints mcpServers; do
+          echo "== $kind"
+          curl -sS -H "Authorization: Bearer $(gcloud auth print-access-token)" -H "x-goog-user-project: $GCP_PROJECT" "$BASE/$kind" | jq '.'
+        done
+
+  gateway:up:
+    desc: '(Preview) Create/update the Agent Gateway, its registry entries and egress policy — needs ENABLE_AGENT_GATEWAY=true'
+    dir: infra/agent-gateway/egress
+    preconditions:
+      - sh: '[ "${ENABLE_AGENT_GATEWAY:-false}" = "true" ]'
+        msg: Set ENABLE_AGENT_GATEWAY=true in .env first.
+    cmds: [terragrunt apply --non-interactive]
+
+  gateway:bind:
+    desc: '(Preview) Route the agent egress through the gateway (run gateway:up first); archives existing revisions'
+    dir: '{{.APP_PY}}'
+    preconditions:
+      - sh: '[ "${ENABLE_AGENT_GATEWAY:-false}" = "true" ]'
+        msg: Set ENABLE_AGENT_GATEWAY=true and run `task gateway:up` first.
+    cmds:
+      # Switches traffic to "always latest" (required for a binding change), then binds.
+      - export AGENT_ENGINE_ID="$(../../scripts/engine-id.sh)" && uv run python -m lifecycle.release gateway --egress bi-agents-egress
+      - export AGENT_ENGINE_ID="$(../../scripts/engine-id.sh)" && uv run python -m lifecycle.release status
+
+  ci-config:
+    desc: Print the GitHub Actions repository variables CI needs
+    cmds:
+      - |
+        echo "Set these as GitHub Actions repository variables:"
+        echo "GCP_PROJECT=$GCP_PROJECT"
+        echo "GCP_REGION=${GCP_REGION:-us-central1}"
+        echo "AGENT_ENGINE_ID=$(./scripts/engine-id.sh)"
+        echo -n "WIF_PROVIDER="; (cd infra/wif/github-ci && terragrunt output -json provider_names | jq -r '.github')
+
+  down:
+    desc: Destroy everything (the Model Armor floor setting is a project singleton and stays — see README)
+    dir: infra
+    cmds: [terragrunt run --all destroy --non-interactive]
