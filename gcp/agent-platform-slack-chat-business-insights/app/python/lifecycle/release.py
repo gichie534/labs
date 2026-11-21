@@ -76,7 +76,7 @@ def agent_env(target: Target, env: Mapping[str, str]) -> dict[str, str]:
     return {
         "BI_PROJECT_ID": target.project_id,
         "BI_REGION": target.region,
-        "BI_MODEL": env.get("BI_MODEL", "gemini-3.8-flash"),
+        "BI_MODEL": env.get("BI_MODEL", "gemini-3.5-flash"),
         "BI_MODEL_LOCATION": env.get("BI_MODEL_LOCATION", "global"),
         "BI_TIMEZONE": env.get("BI_TIMEZONE", "UTC"),
         "BI_RELEASE": release_id(env),
