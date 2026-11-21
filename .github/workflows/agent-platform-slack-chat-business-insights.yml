@@ -57,9 +57,9 @@ env:
   LAB_DIR: gcp/agent-platform-slack-chat-business-insights
   APP_PY: gcp/agent-platform-slack-chat-business-insights/app/python
   APP_GO: gcp/agent-platform-slack-chat-business-insights/app/go/slack-bridge
-  GCP_PROJECT: ${{ vars.GCP_PROJECT }}
-  GCP_REGION: ${{ vars.GCP_REGION }}
-  AGENT_ENGINE_ID: ${{ vars.AGENT_ENGINE_ID }}
+  GCP_PROJECT: ${{ vars.AGENT_INSIGHTS_GCP_PROJECT }}
+  GCP_REGION: ${{ vars.AGENT_INSIGHTS_GCP_REGION }}
+  AGENT_ENGINE_ID: ${{ vars.AGENT_INSIGHTS_AGENT_ID }}
 
 jobs:
   test:
@@ -113,7 +113,7 @@ jobs:
       - uses: actions/checkout@v6
       - uses: google-github-actions/auth@v2
         with:
-          project_id: ${{ vars.GCP_PROJECT }}
+          project_id: ${{ vars.AGENT_INSIGHTS_GCP_PROJECT }}
           workload_identity_provider: ${{ vars.WIF_PROVIDER }}
       - uses: astral-sh/setup-uv@v6
 
@@ -162,12 +162,12 @@ jobs:
       - uses: actions/checkout@v6
       - uses: google-github-actions/auth@v2
         with:
-          project_id: ${{ vars.GCP_PROJECT }}
+          project_id: ${{ vars.AGENT_INSIGHTS_GCP_PROJECT }}
           workload_identity_provider: ${{ vars.WIF_PROVIDER }}
       - uses: google-github-actions/setup-gcloud@v2
       - name: Build, push and roll out the Slack bridge
         env:
-          REGISTRY: ${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT }}/bi-slack-bridge
+          REGISTRY: ${{ vars.AGENT_INSIGHTS_GCP_REGION }}-docker.pkg.dev/${{ vars.AGENT_INSIGHTS_GCP_PROJECT }}/bi-slack-bridge
         run: |
           gcloud auth configure-docker "${GCP_REGION}-docker.pkg.dev" --quiet
           # Unique per run (commit + UTC time): the repository has immutable tags, so a re-run can't reuse one.
@@ -186,7 +186,7 @@ jobs:
       - uses: actions/checkout@v6
       - uses: google-github-actions/auth@v2
         with:
-          project_id: ${{ vars.GCP_PROJECT }}
+          project_id: ${{ vars.AGENT_INSIGHTS_GCP_PROJECT }}
           workload_identity_provider: ${{ vars.WIF_PROVIDER }}
       - uses: astral-sh/setup-uv@v6
       - name: ${{ inputs.action }}
