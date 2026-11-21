@@ -309,7 +309,7 @@ tasks:
         echo "AGENT_INSIGHTS_GCP_PROJECT=$GCP_PROJECT"
         echo "AGENT_INSIGHTS_GCP_REGION=${GCP_REGION:-us-central1}"
         echo "AGENT_INSIGHTS_AGENT_ID=$(./scripts/engine-id.sh)"
-        echo -n "WIF_PROVIDER="; (cd infra/wif/github-ci && terragrunt output -json provider_names | jq -r '.github')
+        echo -n "AGENT_INSIGHTS_WIF_PROVIDER="; (cd infra/wif/github-ci && terragrunt output -json provider_names | jq -r '.github')
 
   down:
     desc: Destroy everything (the Model Armor floor setting is a project singleton and stays — see README)

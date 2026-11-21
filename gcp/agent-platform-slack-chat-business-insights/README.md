@@ -174,7 +174,7 @@ and canaries it only if the gate passes. A push that touches the bridge rolls ou
 rollback are manual: **Run workflow** with an action. One-time setup:
 
 ```bash
-task ci-config      # prints AGENT_INSIGHTS_GCP_PROJECT, AGENT_INSIGHTS_GCP_REGION, AGENT_INSIGHTS_AGENT_ID, WIF_PROVIDER for the repo's Actions variables
+task ci-config      # prints AGENT_INSIGHTS_GCP_PROJECT, AGENT_INSIGHTS_GCP_REGION, AGENT_INSIGHTS_AGENT_ID, AGENT_INSIGHTS_WIF_PROVIDER for the repo's Actions variables
 ```
 
 ## Things to explore

@@ -12,7 +12,7 @@
 # Promotion to 100% is deliberately manual: watch the dashboard / Cloud Trace for the canary first.
 #
 # Required repository variables (Settings > Secrets and variables > Actions > Variables), see `task ci-config`:
-#   GCP_PROJECT, GCP_REGION, AGENT_ENGINE_ID, WIF_PROVIDER
+#   AGENT_INSIGHTS_GCP_PROJECT, AGENT_INSIGHTS_GCP_REGION, AGENT_INSIGHTS_AGENT_ID, AGENT_INSIGHTS_WIF_PROVIDER
 # Optional: EVAL_MIN_PASS (default 0.75), CANARY_PERCENT (default 10).
 #
 # SCOPE: the steady-state app loop. Infrastructure is applied by the operator with `task up`.
@@ -114,7 +114,7 @@ jobs:
       - uses: google-github-actions/auth@v3
         with:
           project_id: ${{ vars.AGENT_INSIGHTS_GCP_PROJECT }}
-          workload_identity_provider: ${{ vars.WIF_PROVIDER }}
+          workload_identity_provider: ${{ vars.AGENT_INSIGHTS_WIF_PROVIDER }}
       - uses: astral-sh/setup-uv@v10.4.0
 
       - name: Release a new revision (0% traffic)
@@ -163,7 +163,7 @@ jobs:
       - uses: google-github-actions/auth@v3
         with:
           project_id: ${{ vars.AGENT_INSIGHTS_GCP_PROJECT }}
-          workload_identity_provider: ${{ vars.WIF_PROVIDER }}
+          workload_identity_provider: ${{ vars.AGENT_INSIGHTS_WIF_PROVIDER }}
       - uses: google-github-actions/setup-gcloud@v3
       - name: Build, push and roll out the Slack bridge
         env:
@@ -187,7 +187,7 @@ jobs:
       - uses: google-github-actions/auth@v3
         with:
           project_id: ${{ vars.AGENT_INSIGHTS_GCP_PROJECT }}
-          workload_identity_provider: ${{ vars.WIF_PROVIDER }}
+          workload_identity_provider: ${{ vars.AGENT_INSIGHTS_WIF_PROVIDER }}
       - uses: astral-sh/setup-uv@v10.4.0
       - name: ${{ inputs.action }}
         working-directory: ${{ env.APP_PY }}
