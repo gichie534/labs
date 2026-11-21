@@ -1,0 +1,9 @@
+# Local Python environment and tool caches (uv sync, pytest, ruff).
+app/python/.venv/
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+
+# Evaluation reports written by `task eval*` / CI.
+eval-report*.json
+app/python/eval-report*.json

@@ -1,0 +1,201 @@
+# CI/CD for the agent-platform-slack-chat-business-insights lab. Keyless: GitHub OIDC -> GCP Workload Identity
+# Federation (infra/wif/github-ci), no service account key.
+#
+# On every pull request and push touching the lab:   unit tests (Python + Go), lint.
+# On push to main touching the agent (app/python):     release a NEW REVISION at 0% traffic
+#                                                      -> ground-truth eval of THAT revision (direct query)
+#                                                      -> gate: below EVAL_MIN_PASS the revision never gets traffic
+#                                                      -> canary: CANARY_PERCENT of traffic to the new revision
+# On push to main touching the bridge (app/go):        build + push the image, roll it out to both services.
+# Manual (workflow_dispatch):                          status | canary | promote | rollback.
+#
+# Promotion to 100% is deliberately manual: watch the dashboard / Cloud Trace for the canary first.
+#
+# Required repository variables (Settings > Secrets and variables > Actions > Variables), see `task ci-config`:
+#   GCP_PROJECT, GCP_REGION, AGENT_ENGINE_ID, WIF_PROVIDER
+# Optional: EVAL_MIN_PASS (default 0.75), CANARY_PERCENT (default 10).
+#
+# SCOPE: the steady-state app loop. Infrastructure is applied by the operator with `task up`.
+#
+# This workflow lives inside the lab folder; GitHub only runs the repo-root copy
+# (.github/workflows/agent-platform-slack-chat-business-insights.yml). Keep the two identical.
+name: agent-platform-slack-chat-business-insights
+
+on:
+  pull_request:
+    paths:
+      - "gcp/agent-platform-slack-chat-business-insights/**"
+  push:
+    branches: [main]
+    paths:
+      - "gcp/agent-platform-slack-chat-business-insights/app/**"
+      - "gcp/agent-platform-slack-chat-business-insights/.github/workflows/ci.yml"
+  workflow_dispatch:
+    inputs:
+      action:
+        description: Traffic action
+        type: choice
+        options: [status, canary, promote, rollback]
+        default: status
+      revision:
+        description: Revision ID (canary / promote)
+        required: false
+      percent:
+        description: Canary percent
+        required: false
+        default: "10"
+
+permissions:
+  contents: read
+  id-token: write # GitHub mints the OIDC token used by WIF
+
+concurrency:
+  group: agent-platform-slack-chat-business-insights-${{ github.ref }}
+  cancel-in-progress: false # never interrupt a release half-way
+
+env:
+  LAB_DIR: gcp/agent-platform-slack-chat-business-insights
+  APP_PY: gcp/agent-platform-slack-chat-business-insights/app/python
+  APP_GO: gcp/agent-platform-slack-chat-business-insights/app/go/slack-bridge
+  GCP_PROJECT: ${{ vars.GCP_PROJECT }}
+  GCP_REGION: ${{ vars.GCP_REGION }}
+  AGENT_ENGINE_ID: ${{ vars.AGENT_ENGINE_ID }}
+
+jobs:
+  test:
+    if: github.event_name != 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    outputs:
+      agent: ${{ steps.changes.outputs.agent }}
+      bridge: ${{ steps.changes.outputs.bridge }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Detect what changed
+        id: changes
+        run: |
+          if [ "${{ github.event_name }}" = "push" ] && [ "${{ github.event.before }}" != "0000000000000000000000000000000000000000" ]; then
+            files="$(git diff --name-only "${{ github.event.before }}" "${{ github.sha }}")"
+          else
+            files="$(git diff --name-only "origin/${{ github.base_ref || 'main' }}...HEAD" 2>/dev/null || git ls-files "$LAB_DIR")"
+          fi
+          echo "agent=$(echo "$files" | grep -q "^$APP_PY/" && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          echo "bridge=$(echo "$files" | grep -q "^$APP_GO/" && echo true || echo false)" >> "$GITHUB_OUTPUT"
+
+      - uses: astral-sh/setup-uv@v6
+      - name: Python — lint and unit tests
+        working-directory: ${{ env.APP_PY }}
+        run: |
+          uv sync --locked
+          uv run ruff check .
+          uv run ruff format --check .
+          uv run pytest -q
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: ${{ env.APP_GO }}/go.mod
+          cache-dependency-path: ${{ env.APP_GO }}/go.sum
+      - name: Go — vet and unit tests
+        working-directory: ${{ env.APP_GO }}
+        run: |
+          test -z "$(gofmt -l .)" || { gofmt -l .; echo "gofmt needed" >&2; exit 1; }
+          go vet ./...
+          go test ./...
+
+  release-agent:
+    needs: test
+    if: github.event_name == 'push' && needs.test.outputs.agent == 'true'
+    runs-on: ubuntu-latest
+    environment: agent-runtime
+    steps:
+      - uses: actions/checkout@v6
+      - uses: google-github-actions/auth@v2
+        with:
+          project_id: ${{ vars.GCP_PROJECT }}
+          workload_identity_provider: ${{ vars.WIF_PROVIDER }}
+      - uses: astral-sh/setup-uv@v6
+
+      - name: Release a new revision (0% traffic)
+        id: release
+        working-directory: ${{ env.APP_PY }}
+        env:
+          RELEASE: ${{ github.sha }}
+        run: |
+          uv sync --locked
+          export RELEASE="${RELEASE::12}"
+          uv run python -m lifecycle.release release
+
+      - name: Evaluate the new revision (eval gate)
+        working-directory: ${{ env.APP_PY }}
+        env:
+          EVAL_MIN_PASS: ${{ vars.EVAL_MIN_PASS || '0.75' }}
+        run: |
+          uv run python -m evals.run --target revision --revision "${{ steps.release.outputs.revision }}" \
+            --report eval-report.json --platform-eval
+
+      - name: Upload the eval report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: eval-report-${{ steps.release.outputs.revision }}
+          path: ${{ env.APP_PY }}/eval-report.json
+          if-no-files-found: ignore
+
+      - name: Canary
+        working-directory: ${{ env.APP_PY }}
+        run: |
+          uv run python -m lifecycle.release canary --revision "${{ steps.release.outputs.revision }}" \
+            --percent "${{ vars.CANARY_PERCENT || '10' }}"
+          uv run python -m lifecycle.release status
+          {
+            echo "### Agent revision \`${{ steps.release.outputs.revision }}\` is live on ${{ vars.CANARY_PERCENT || '10' }}% of traffic"
+            echo "Promote: Actions > ${{ github.workflow }} > Run workflow > action=promote, revision=${{ steps.release.outputs.revision }}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  deploy-bridge:
+    needs: test
+    if: github.event_name == 'push' && needs.test.outputs.bridge == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: google-github-actions/auth@v2
+        with:
+          project_id: ${{ vars.GCP_PROJECT }}
+          workload_identity_provider: ${{ vars.WIF_PROVIDER }}
+      - uses: google-github-actions/setup-gcloud@v2
+      - name: Build, push and roll out the Slack bridge
+        env:
+          REGISTRY: ${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT }}/bi-slack-bridge
+        run: |
+          gcloud auth configure-docker "${GCP_REGION}-docker.pkg.dev" --quiet
+          # Unique per run (commit + UTC time): the repository has immutable tags, so a re-run can't reuse one.
+          IMAGE="$REGISTRY/slack-bridge:${GITHUB_SHA::12}-$(date -u +%Y%m%d-%H%M%S)"
+          docker build --platform linux/amd64 -t "$IMAGE" "$APP_GO"
+          docker push "$IMAGE"
+          for svc in bi-slack-ingress bi-slack-worker; do
+            gcloud run services update "$svc" --image "$IMAGE" --region "$GCP_REGION" --project "$GCP_PROJECT" --quiet
+          done
+
+  traffic:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    environment: agent-runtime
+    steps:
+      - uses: actions/checkout@v6
+      - uses: google-github-actions/auth@v2
+        with:
+          project_id: ${{ vars.GCP_PROJECT }}
+          workload_identity_provider: ${{ vars.WIF_PROVIDER }}
+      - uses: astral-sh/setup-uv@v6
+      - name: ${{ inputs.action }}
+        working-directory: ${{ env.APP_PY }}
+        run: |
+          uv sync --locked
+          case "${{ inputs.action }}" in
+            status)   uv run python -m lifecycle.release status ;;
+            rollback) uv run python -m lifecycle.release rollback ;;
+            promote)  uv run python -m lifecycle.release promote --revision "${{ inputs.revision }}" ;;
+            canary)   uv run python -m lifecycle.release canary --revision "${{ inputs.revision }}" --percent "${{ inputs.percent }}" ;;
+          esac
