@@ -306,9 +306,9 @@ tasks:
     cmds:
       - |
         echo "Set these as GitHub Actions repository variables:"
-        echo "GCP_PROJECT=$GCP_PROJECT"
-        echo "GCP_REGION=${GCP_REGION:-us-central1}"
-        echo "AGENT_ENGINE_ID=$(./scripts/engine-id.sh)"
+        echo "AGENT_INSIGHTS_GCP_PROJECT=$GCP_PROJECT"
+        echo "AGENT_INSIGHTS_GCP_REGION=${GCP_REGION:-us-central1}"
+        echo "AGENT_INSIGHTS_AGENT_ID=$(./scripts/engine-id.sh)"
         echo -n "WIF_PROVIDER="; (cd infra/wif/github-ci && terragrunt output -json provider_names | jq -r '.github')
 
   down:

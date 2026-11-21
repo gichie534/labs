@@ -29,7 +29,7 @@ on:
     branches: [main]
     paths:
       - "gcp/agent-platform-slack-chat-business-insights/app/**"
-      - "gcp/agent-platform-slack-chat-business-insights/.github/workflows/ci.yml"
+      - ".github/workflows/ci.yml"
   workflow_dispatch:
     inputs:
       action:
@@ -57,9 +57,9 @@ env:
   LAB_DIR: gcp/agent-platform-slack-chat-business-insights
   APP_PY: gcp/agent-platform-slack-chat-business-insights/app/python
   APP_GO: gcp/agent-platform-slack-chat-business-insights/app/go/slack-bridge
-  GCP_PROJECT: ${{ vars.GCP_PROJECT }}
-  GCP_REGION: ${{ vars.GCP_REGION }}
-  AGENT_ENGINE_ID: ${{ vars.AGENT_ENGINE_ID }}
+  GCP_PROJECT: ${{ vars.AGENT_INSIGHTS_GCP_PROJECT }}
+  GCP_REGION: ${{ vars.AGENT_INSIGHTS_GCP_REGION }}
+  AGENT_ENGINE_ID: ${{ vars.AGENT_INSIGHTS_AGENT_ID }}
 
 jobs:
   test:
@@ -69,7 +69,7 @@ jobs:
       agent: ${{ steps.changes.outputs.agent }}
       bridge: ${{ steps.changes.outputs.bridge }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
@@ -84,7 +84,7 @@ jobs:
           echo "agent=$(echo "$files" | grep -q "^$APP_PY/" && echo true || echo false)" >> "$GITHUB_OUTPUT"
           echo "bridge=$(echo "$files" | grep -q "^$APP_GO/" && echo true || echo false)" >> "$GITHUB_OUTPUT"
 
-      - uses: astral-sh/setup-uv@v6
+      - uses: astral-sh/setup-uv@v10.4.0
       - name: Python — lint and unit tests
         working-directory: ${{ env.APP_PY }}
         run: |
@@ -93,7 +93,7 @@ jobs:
           uv run ruff format --check .
           uv run pytest -q
 
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7
         with:
           go-version-file: ${{ env.APP_GO }}/go.mod
           cache-dependency-path: ${{ env.APP_GO }}/go.sum
@@ -110,12 +110,12 @@ jobs:
     runs-on: ubuntu-latest
     environment: agent-runtime
     steps:
-      - uses: actions/checkout@v6
-      - uses: google-github-actions/auth@v2
+      - uses: actions/checkout@v7
+      - uses: google-github-actions/auth@v3
         with:
-          project_id: ${{ vars.GCP_PROJECT }}
+          project_id: ${{ vars.AGENT_INSIGHTS_GCP_PROJECT }}
           workload_identity_provider: ${{ vars.WIF_PROVIDER }}
-      - uses: astral-sh/setup-uv@v6
+      - uses: astral-sh/setup-uv@v10.4.0
 
       - name: Release a new revision (0% traffic)
         id: release
@@ -137,7 +137,7 @@ jobs:
 
       - name: Upload the eval report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: eval-report-${{ steps.release.outputs.revision }}
           path: ${{ env.APP_PY }}/eval-report.json
@@ -159,15 +159,15 @@ jobs:
     if: github.event_name == 'push' && needs.test.outputs.bridge == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
-      - uses: google-github-actions/auth@v2
+      - uses: actions/checkout@v7
+      - uses: google-github-actions/auth@v3
         with:
-          project_id: ${{ vars.GCP_PROJECT }}
+          project_id: ${{ vars.AGENT_INSIGHTS_GCP_PROJECT }}
           workload_identity_provider: ${{ vars.WIF_PROVIDER }}
-      - uses: google-github-actions/setup-gcloud@v2
+      - uses: google-github-actions/setup-gcloud@v3
       - name: Build, push and roll out the Slack bridge
         env:
-          REGISTRY: ${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT }}/bi-slack-bridge
+          REGISTRY: ${{ vars.AGENT_INSIGHTS_GCP_REGION }}-docker.pkg.dev/${{ vars.AGENT_INSIGHTS_GCP_PROJECT }}/bi-slack-bridge
         run: |
           gcloud auth configure-docker "${GCP_REGION}-docker.pkg.dev" --quiet
           # Unique per run (commit + UTC time): the repository has immutable tags, so a re-run can't reuse one.
@@ -183,12 +183,12 @@ jobs:
     runs-on: ubuntu-latest
     environment: agent-runtime
     steps:
-      - uses: actions/checkout@v6
-      - uses: google-github-actions/auth@v2
+      - uses: actions/checkout@v7
+      - uses: google-github-actions/auth@v3
         with:
-          project_id: ${{ vars.GCP_PROJECT }}
+          project_id: ${{ vars.AGENT_INSIGHTS_GCP_PROJECT }}
           workload_identity_provider: ${{ vars.WIF_PROVIDER }}
-      - uses: astral-sh/setup-uv@v6
+      - uses: astral-sh/setup-uv@v10.4.0
       - name: ${{ inputs.action }}
         working-directory: ${{ env.APP_PY }}
         run: |
