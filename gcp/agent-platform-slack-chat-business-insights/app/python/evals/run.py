@@ -11,8 +11,6 @@ with every question, answer, tool trajectory and score is written to --report.
 Ground truth runs in BigQuery as the caller (operator or CI), who can read bi_crm_snapshot — the agent can't.
 """
 
-from __future__ import annotations
-
 import argparse
 import asyncio
 import json

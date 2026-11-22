@@ -106,7 +106,7 @@ infra/
 | `monitoring/dashboards-alerts` | `gcp/monitoring` | **local** (new) |
 | `wif/` | `gcp/workload-identity-federation` | `gcp-workload-identity-federation-v0.2.1` |
 
-Pinned: Terraform `1.16.4`, Terragrunt `1.0.7` (tenv), google provider `~> 8.12` in the new modules, ADK
+Pinned: Terraform `1.16.4`, Terragrunt `1.0.7` (tenv), google provider `~> 8.12` in the new modules, Python `3.14` (local and on Agent Runtime), ADK
 `2.14.1`, `google-cloud-agentplatform` `2.10.0`, Go `1.26`, `slack-go` `v0.36.0`. Python deps are locked in
 `app/python/uv.lock`. Agent Runtime installs `business_insights/requirements.txt`.
 

@@ -9,6 +9,8 @@ def test_update_config_ships_source_as_a_revision():
     assert cfg["source_packages"] == ["business_insights"]
     assert (cfg["entrypoint_module"], cfg["entrypoint_object"]) == ("business_insights.runtime_app", "app")
     assert cfg["requirements_file"] == "business_insights/requirements.txt"
+    # The runtime's Python matches the project's, whatever interpreter runs the release.
+    assert cfg["python_version"] == "3.14"
     assert {m["name"] for m in cfg["class_methods"]} >= {"async_stream_query", "async_create_session"}
     # Scaling is versioned with the code (the API refuses a deployment_spec on a code-less engine).
     assert (cfg["min_instances"], cfg["max_instances"]) == (0, 3)

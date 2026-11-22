@@ -3,8 +3,6 @@
 ``root_agent`` is what ``adk web`` / ``adk run`` load locally. ``runtime_app.app`` wraps it for Agent Runtime.
 """
 
-from __future__ import annotations
-
 from google.adk.agents import Agent
 from google.adk.models import Gemini
 from google.adk.tools.preload_memory_tool import PreloadMemoryTool

@@ -20,8 +20,6 @@ BI_MODEL_LOCATION, BI_TIMEZONE, CAPTURE_MESSAGE_CONTENT (default true), AGENT_MI
 AGENT_MAX_INSTANCES (3), AGENT_CPU (2), AGENT_MEMORY (4Gi), AGENT_CONCURRENCY (5).
 """
 
-from __future__ import annotations
-
 import argparse
 import asyncio
 import datetime as dt
@@ -36,6 +34,8 @@ from lifecycle import traffic
 from lifecycle.client import Target, ask, final_text, platform_client, target_from_env, tool_calls
 
 APP_DIR = Path(__file__).resolve().parents[1]
+# Python that Agent Runtime builds the revision with (the platform supports 3.10-3.14).
+PYTHON_VERSION = "3.14"
 
 # AdkApp's operations, as Agent Runtime must expose them. Deploying from source requires listing them explicitly.
 CLASS_METHODS: list[dict[str, Any]] = [
@@ -67,7 +67,7 @@ def release_id(env: Mapping[str, str]) -> str:
         ).stdout.strip()
         dirty = subprocess.run(["git", "status", "--porcelain", "."], capture_output=True, text=True, cwd=APP_DIR)
         return f"{sha}-dirty" if dirty.stdout.strip() else sha
-    except (OSError, subprocess.CalledProcessError):
+    except OSError, subprocess.CalledProcessError:
         return dt.datetime.now(dt.UTC).strftime("%Y%m%d%H%M%S")
 
 
@@ -109,6 +109,9 @@ def update_config(target: Target, env: Mapping[str, str]) -> dict[str, Any]:
         "requirements_file": "business_insights/requirements.txt",
         "class_methods": CLASS_METHODS,
         "agent_framework": "google-adk",
+        # Pinned, not inherited from whoever runs the release (the SDK's default is the local interpreter).
+        # Keep in step with requires-python in pyproject.toml.
+        "python_version": PYTHON_VERSION,
         "env_vars": agent_env(target, env),
         **scaling(env),
     }

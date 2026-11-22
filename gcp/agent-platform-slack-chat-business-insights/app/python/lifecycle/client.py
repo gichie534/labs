@@ -4,8 +4,6 @@ All three return the same thing — the list of ADK event dicts for one turn —
 where the agent runs.
 """
 
-from __future__ import annotations
-
 import os
 import uuid
 from collections.abc import Mapping

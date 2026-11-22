@@ -17,6 +17,11 @@ def test_falls_back_to_google_cloud_project():
     assert from_env({"GOOGLE_CLOUD_PROJECT": "p-1"}).project_id == "p-1"
 
 
+def test_local_runs_use_the_lab_env_project():
+    assert from_env({"GCP_PROJECT": "p-2", "GOOGLE_CLOUD_PROJECT": "other"}).project_id == "p-2"
+    assert from_env({"BI_PROJECT_ID": "p-3", "GCP_PROJECT": "p-2"}).project_id == "p-3"
+
+
 def test_requires_a_project():
     with pytest.raises(RuntimeError):
         from_env({})

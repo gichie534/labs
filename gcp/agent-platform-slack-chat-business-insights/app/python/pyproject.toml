@@ -2,7 +2,7 @@
 name = "business-insights-agent"
 version = "0.1.0"
 description = "ADK agent on Gemini Enterprise Agent Platform that answers business questions from Slack."
-requires-python = ">=3.12,<3.13"
+requires-python = ">=3.14,<3.15"
 dependencies = [
   # Same pins as business_insights/requirements.txt (what Agent Runtime installs).
   "google-adk[mcp]==2.14.1",
@@ -34,7 +34,7 @@ asyncio_default_fixture_loop_scope = "function"
 
 [tool.ruff]
 line-length = 120
-target-version = "py312"
+target-version = "py314"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP", "BLE"]

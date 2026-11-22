@@ -4,8 +4,6 @@ On Agent Runtime, AdkApp wires the agent to the platform's managed services: Age
 thread maps to a session), Memory Bank (long-term memories per user) and Cloud Trace telemetry.
 """
 
-from __future__ import annotations
-
 from agentplatform.frameworks import AdkApp
 
 from business_insights.agent import root_agent

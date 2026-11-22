@@ -4,8 +4,6 @@ A plain function tool (not MCP) using the Cloud Storage client library. Like the
 identity, which has objectViewer on the docs bucket and nothing else in Cloud Storage.
 """
 
-from __future__ import annotations
-
 import time
 from collections.abc import Callable
 from typing import Any

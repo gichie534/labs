@@ -3,8 +3,6 @@
 Built per turn (an ADK instruction provider) so that "today" is always correct; everything else is static.
 """
 
-from __future__ import annotations
-
 import datetime as dt
 from typing import Any
 from zoneinfo import ZoneInfo

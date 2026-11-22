@@ -17,8 +17,6 @@ The two toolsets authenticate differently:
   Credentials ``generateAccessToken``) and sends it to the Cloud SQL MCP server. No password exists anywhere.
 """
 
-from __future__ import annotations
-
 import asyncio
 import datetime as dt
 import os
@@ -58,7 +56,7 @@ def client_certificate_available() -> bool:
         from google.auth.transport import mtls
 
         use_cert = bool(mtls.should_use_client_cert())
-    except (ImportError, AttributeError):
+    except ImportError, AttributeError:
         use_cert = os.getenv("GOOGLE_API_USE_CLIENT_CERTIFICATE", "false").lower() == "true"
     if not use_cert:
         return False

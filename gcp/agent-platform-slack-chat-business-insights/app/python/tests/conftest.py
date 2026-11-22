@@ -1,7 +1,5 @@
 """Test environment: a fake project, no credentials needed for unit tests."""
 
-from __future__ import annotations
-
 import os
 
 import pytest

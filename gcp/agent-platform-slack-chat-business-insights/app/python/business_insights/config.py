@@ -5,8 +5,6 @@ revision, so each revision carries its own configuration; locally ``task dev`` e
 ``.env``. Defaults follow the lab's naming convention (``root.hcl``), so normally only the project is needed.
 """
 
-from __future__ import annotations
-
 import os
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -42,10 +40,11 @@ def from_env(env: Mapping[str, str] | None = None) -> Settings:
         RuntimeError: if no project is configured.
     """
     env = os.environ if env is None else env
-    # BI_PROJECT_ID is set explicitly at deploy time. GOOGLE_CLOUD_PROJECT is the local fallback.
-    project = env.get("BI_PROJECT_ID") or env.get("GOOGLE_CLOUD_PROJECT")
+    # BI_PROJECT_ID is set explicitly at deploy time. Locally, GCP_PROJECT comes from the lab's .env;
+    # GOOGLE_CLOUD_PROJECT is the generic fallback.
+    project = env.get("BI_PROJECT_ID") or env.get("GCP_PROJECT") or env.get("GOOGLE_CLOUD_PROJECT")
     if not project:
-        raise RuntimeError("Set BI_PROJECT_ID (or GOOGLE_CLOUD_PROJECT) to the lab's project ID.")
+        raise RuntimeError("Set BI_PROJECT_ID (or GCP_PROJECT in .env) to the lab's project ID.")
     region = env.get("BI_REGION", "us-central1")
     return Settings(
         project_id=project,

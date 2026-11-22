@@ -10,8 +10,6 @@ always logs in with IAM database authentication as the caller — the borrowed b
 long-term memories configured on the Agent Runtime instance (reporting preferences, focus areas).
 """
 
-from __future__ import annotations
-
 import logging
 from typing import Any
 

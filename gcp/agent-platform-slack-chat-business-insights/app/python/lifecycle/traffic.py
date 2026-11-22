@@ -4,8 +4,6 @@ A split is ``{revision_name: percent}`` with integer percents summing to 100. Th
 "always latest" mode; `current_split` turns it into an explicit split so the rest of the code has one shape.
 """
 
-from __future__ import annotations
-
 import datetime as dt
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass

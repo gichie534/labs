@@ -5,8 +5,6 @@ within a tolerance. That makes the eval deterministic and cheap. The optional Ag
 (LLM-as-judge) is a second opinion, not the gate.
 """
 
-from __future__ import annotations
-
 import math
 import re
 from dataclasses import dataclass
